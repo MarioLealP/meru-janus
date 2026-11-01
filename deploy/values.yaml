@@ -17,3 +17,9 @@ secretEnv:
     key: token
 externalSecrets:
   gitea: {}
+# Who may connect (D97): the host side - Caddy, Gitea and Zabbix are still Docker containers, so their addresses,
+# plus the node for the kubelet's probes - the atlas UI reaches Janus through Caddy, never in-cluster. Everything else in the cluster is refused. When Caddy and Gitea move
+# into the cluster (D24) the Docker range goes for their namespaces.
+networkPolicy:
+  enabled: true
+  fromNamespaces: []
