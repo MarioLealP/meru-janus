@@ -54,3 +54,12 @@ class Pending(Value):
     requested_by: str | None  # who asked, from Janus's Requested-By line
     head: str  # the commit an approval would be for (J2)
     files: list[str]
+
+
+class OnMain(Value):
+    """A request on Meru/requests main - an app or database Meru runs (or has retired)."""
+
+    path: RequestPath
+    kind: str  # app | database
+    name: str
+    removed: bool

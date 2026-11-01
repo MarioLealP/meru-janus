@@ -1,7 +1,8 @@
 """janus: Meru's front door (D82, D92-D96). Takes request files from the atlas and agents (Authentik identities via
 Caddy), checks them with Shikigami, and opens them as PRs on Meru/requests that wait for Mario's approval.
 
-J1: submit + list. J2 (D98): Approve / Deny start Authentik's silent check and hand the one-time code to Xolotl."""
+J1: submit + list. J2 (D98): Approve / Deny start Authentik's silent check and hand the one-time code to Xolotl.
+J3: the atlas's Remove - Janus opens the removal PR in Mario's name and approves it in the same click (same check)."""
 
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -11,15 +12,16 @@ from urllib.parse import parse_qs
 import httpx2
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
-from janus import approve, gitea, shikigami
+from janus import approve, gitea, remove, shikigami
 from janus.config import Settings
-from janus.models import Pending, Rejected, Submission, Submitted
+from janus.models import OnMain, Pending, Rejected, RequestPath, Submission, Submitted
 from janus.propose import ProposeError, Proposer, pr_from
 
 log = logging.getLogger("janus")
 OPEN_PATHS = {"/heartbeat"}  # the probes, from the kubelet - no identity there
+REQUEST_PATH = TypeAdapter(RequestPath)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -63,44 +65,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except httpx2.HTTPError as e:
             raise HTTPException(502, f"can't read Meru/requests: {type(e).__name__}") from e
 
-    @app.post("/api/janus/requests", status_code=201, response_model=Submitted, responses={422: {"model": Rejected}})
-    async def submit(submission: Submission, request: Request) -> Submitted | JSONResponse:
-        """Propose a request file. Shikigami checks it against main first; a valid one becomes a PR (or updates the
-        open PR for the same file). Who asked is the Authentik identity Caddy passed on."""
+    @app.get("/api/janus/apps")
+    async def list_on_main() -> list[OnMain]:
+        """What's on Meru/requests main: the apps and databases Meru runs, and the retired ones."""
+        try:
+            return await gitea.on_main(state["http"], s.gitea_url, s.org, s.requests_repo, bot())
+        except httpx2.HTTPError as e:
+            raise HTTPException(502, f"can't read Meru/requests: {type(e).__name__}") from e
+
+    async def check_and_propose(submission: Submission, who: str) -> tuple[Submitted, str] | Rejected:
+        """Shikigami checks the file against main; a valid one becomes a PR (or updates the open PR for the same
+        file). Returns the PR and its head commit."""
         bot()
         assert proposer is not None  # bot() said there's a token
-        who = request.headers[s.identity_header]
         try:
             verdict = await shikigami.validate(state["http"], s.shikigami_validate_url, submission)
         except httpx2.HTTPError as e:
             raise HTTPException(502, f"Shikigami can't check it right now: {type(e).__name__}") from e
         if verdict.problems:
-            rejected = Rejected(problems=verdict.problems, checked_against=verdict.commit)
-            return JSONResponse(rejected.model_dump(), status_code=422)
+            return Rejected(problems=verdict.problems, checked_against=verdict.commit)
         try:
-            title, output = await proposer.propose(submission, who, verdict.commit)
+            title, output, head = await proposer.propose(submission, who, verdict.commit)
         except ProposeError as e:
             log.error("proposing %s for %s: %s", submission.path, who, e)
             raise HTTPException(502, "couldn't open the PR on Meru/requests") from e
         pr, url = pr_from(output)
         log.info("%s proposed %s: %s", who, submission.path, url or "PR not named in the push answer")
-        return Submitted(pr=pr, url=url, title=title, checked_against=verdict.commit)
+        return Submitted(pr=pr, url=url, title=title, checked_against=verdict.commit), head
 
-    @app.post("/api/janus/approve/{pr}/start")
-    async def approve_start(pr: int, request: Request) -> Response:
-        """The atlas's Approve / Deny button (a form POST with head + decision): off to Authentik's silent check."""
+    @app.post("/api/janus/requests", status_code=201, response_model=Submitted, responses={422: {"model": Rejected}})
+    async def submit(submission: Submission, request: Request) -> Submitted | JSONResponse:
+        """Propose a request file. Shikigami checks it against main first; a valid one becomes a PR (or updates the
+        open PR for the same file). Who asked is the Authentik identity Caddy passed on."""
+        answer = await check_and_propose(submission, request.headers[s.identity_header])
+        if isinstance(answer, Rejected):
+            return JSONResponse(answer.model_dump(), status_code=422)
+        return answer[0]
+
+    def refused(request: Request, pr: int | None = None) -> Response | None:
+        """Approve / Deny / Remove only from the atlas's own page, and only for approvers."""
         if not approve.from_the_atlas(
             request.headers.get("sec-fetch-site"), request.headers.get("origin"), s.atlas_origin
         ):
             return back(approve.Result.NOT_ATLAS, pr)
-        groups = request.headers.get(s.groups_header, "").split("|")
-        if s.approvers_group not in groups:
+        if s.approvers_group not in request.headers.get(s.groups_header, "").split("|"):
             return back(approve.Result.NOT_APPROVER, pr)
-        form = parse_qs((await request.body()).decode(), max_num_fields=4)
-        try:
-            click = approve.new_click(pr, form["head"][0], form["decision"][0])  # ty: ignore[invalid-argument-type]
-        except KeyError, ValidationError:
-            return back(approve.Result.BAD_BUTTON, pr)
+        return None
+
+    def begin_approval(click: approve.Click) -> Response:
+        """Off to Authentik's silent check, with the click in a short HttpOnly cookie for the callback."""
         url = approve.authorize_url(
             s.authorize_url, s.approvals_client_id, s.approvals_redirect_uri, click, s.org, s.requests_repo
         )
@@ -116,6 +129,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return response
 
+    @app.post("/api/janus/approve/remove")
+    async def remove_start(request: Request) -> Response:
+        """The atlas's Remove (a form POST with the request's path): the file from main with `removed: true` becomes
+        a PR in the clicker's name, and the click goes on as an Approve of that PR - one click, the same check and
+        the same write by Xolotl as any approval (D83: retiring is approved like creating)."""
+        if no := refused(request):
+            return no
+        form = parse_qs((await request.body()).decode(), max_num_fields=2)
+        try:
+            path = REQUEST_PATH.validate_python(form["path"][0])
+        except KeyError, ValidationError:
+            return back(approve.Result.BAD_BUTTON)
+        try:
+            text = await gitea.read_main(state["http"], s.gitea_url, s.org, s.requests_repo, bot(), path)
+        except gitea.NotOnMain:
+            return back(approve.Result.NOT_ON_MAIN, decision="remove")
+        except httpx2.HTTPError:
+            return back(approve.Result.DOWN, decision="remove")
+        if remove.is_removed(text):
+            return back(approve.Result.ALREADY_REMOVED, decision="remove")
+        try:
+            submission = Submission(path=path, content=remove.mark_removed(text))
+        except remove.Unremovable as e:
+            log.warning("can't mark %s removed: %s", path, e)
+            return back(approve.Result.BAD_BUTTON, decision="remove")
+        try:
+            answer = await check_and_propose(submission, request.headers[s.identity_header])
+        except HTTPException:
+            return back(approve.Result.DOWN, decision="remove")
+        if isinstance(answer, Rejected):
+            log.warning("removing %s: Shikigami says %s", path, answer.problems)
+            return back(approve.Result.PROBLEMS, decision="remove")
+        submitted, head = answer
+        if submitted.pr is None:
+            return back(approve.Result.DOWN, decision="remove")
+        return begin_approval(approve.new_click(submitted.pr, head, "approve", removing=True))
+
+    @app.post("/api/janus/approve/{pr}/start")
+    async def approve_start(pr: int, request: Request) -> Response:
+        """The atlas's Approve / Deny button (a form POST with head + decision): off to Authentik's silent check."""
+        if no := refused(request, pr):
+            return no
+        form = parse_qs((await request.body()).decode(), max_num_fields=4)
+        try:
+            click = approve.new_click(pr, form["head"][0], form["decision"][0])  # ty: ignore[invalid-argument-type]
+        except KeyError, ValidationError:
+            return back(approve.Result.BAD_BUTTON, pr)
+        return begin_approval(click)
+
     @app.get("/api/janus/approve/callback")
     async def approve_callback(request: Request) -> Response:
         """Authentik's answer: a code (or login_required) and the state; Xolotl gets the code if the state is ours.
@@ -128,17 +190,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if error := query.get("error"):
             log.warning("approval of PR #%d: Authentik answered %s", click.pr, error)
             if error in ("login_required", "consent_required", "interaction_required"):
-                return done(back(approve.Result.SIGN_IN, click.pr, click.decision))
-            return done(back(approve.Result.AUTHENTIK_NO, click.pr, click.decision))
+                return done(back(approve.Result.SIGN_IN, click.pr, said(click)))
+            return done(back(approve.Result.AUTHENTIK_NO, click.pr, said(click)))
         code = query.get("code")
         if not code:
-            return done(back(approve.Result.AUTHENTIK_NO, click.pr, click.decision))
+            return done(back(approve.Result.AUTHENTIK_NO, click.pr, said(click)))
         try:
             outcome = await approve.hand_to_xolotl(state["http"], s.xolotl_approve_url, click, code)
         except approve.NotApproved as e:
             log.warning("approval of PR #%d not done: %s %s", click.pr, e.status, e.reason)
-            return done(back(approve.result_of(e.status), click.pr, click.decision))
-        return done(back(approve.Result.DONE, outcome.pr, outcome.decision, outcome.by, outcome.commit))
+            return done(back(approve.result_of(e.status), click.pr, said(click)))
+        return done(back(approve.Result.DONE, outcome.pr, said(click), outcome.by, outcome.commit))
+
+    def said(click: approve.Click) -> str:
+        return "remove" if click.removing else click.decision
 
     def back(
         result: approve.Result,

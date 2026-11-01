@@ -34,6 +34,8 @@ class Result(StrEnum):
     """How an approval ended - the atlas has the words for each (Requests.svelte RESULTS)."""
 
     DONE = "done"
+    NOT_ON_MAIN = "not-on-main"  # Remove: no such request on main
+    ALREADY_REMOVED = "already-removed"
     NOT_ATLAS = "not-atlas"
     NOT_APPROVER = "not-approver"
     BAD_BUTTON = "bad-button"
@@ -73,6 +75,7 @@ class Click(Value):
     pr: Annotated[int, Field(gt=0)]
     head: Head
     decision: Decision
+    removing: bool = False  # the atlas's Remove: Janus opened the removal PR and approves it in the same click
 
 
 class Outcome(Incoming):
@@ -97,8 +100,8 @@ def nonce(org: str, repo: str, pr: int, head: str, decision: Decision) -> str:
     return hashlib.sha256(f"{org}/{repo}#{pr}@{head}:{decision}".encode()).hexdigest()
 
 
-def new_click(pr: int, head: str, decision: Decision) -> Click:
-    return Click(state=secrets.token_urlsafe(32), pr=pr, head=head, decision=decision)
+def new_click(pr: int, head: str, decision: Decision, removing: bool = False) -> Click:
+    return Click(state=secrets.token_urlsafe(32), pr=pr, head=head, decision=decision, removing=removing)
 
 
 def authorize_url(authorize: str, client_id: str, redirect_uri: str, click: Click, org: str, repo: str) -> str:

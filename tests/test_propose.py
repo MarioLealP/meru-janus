@@ -26,9 +26,10 @@ async def test_a_proposal_lands_as_one_commit_on_refs_for_main(tmp_path: Path):
     work.mkdir()
     proposer = Proposer(f"file://{bare}", "janus", "secret-token", work, timeout=30)
     submission = Submission(path="apps/golem.yaml", content="kind: App\nname: golem\n")
-    title, _ = await proposer.propose(submission, "agent-claude", "c0ffee")
+    title, _, head = await proposer.propose(submission, "agent-claude", "c0ffee")
     assert title == "feat(request): add app golem"
     show = lambda *a: subprocess.run(["git", *a], cwd=bare, check=True, capture_output=True, text=True).stdout  # noqa: E731
+    assert head == show("rev-parse", "refs/for/main").strip()  # what an approval of this PR is for
     assert show("show", "refs/for/main:apps/golem.yaml") == "kind: App\nname: golem\n"
     message = show("log", "-1", "--format=%an <%ae>%n%B", "refs/for/main")
     assert message.startswith("janus <janus@clockmost.com>\nfeat(request): add app golem\n")
@@ -41,7 +42,7 @@ async def test_a_proposal_lands_as_one_commit_on_refs_for_main(tmp_path: Path):
 async def test_changing_an_existing_request_says_change(tmp_path: Path):
     bare = bare_repo(tmp_path)
     proposer = Proposer(f"file://{bare}", "janus", "t", tmp_path, timeout=30)
-    title, _ = await proposer.propose(Submission(path="apps/echo.yaml", content="x\n"), "mario", "c")
+    title, _, _ = await proposer.propose(Submission(path="apps/echo.yaml", content="x\n"), "mario", "c")
     assert title == "feat(request): change app echo"
 
 
@@ -49,6 +50,8 @@ def test_names():
     db = Submission(path="databases/thoth.yaml", content="")
     assert title_for(db, exists=False) == "feat(request): add database thoth"
     assert topic_for(db) == "request-databases-thoth"
+    gone = Submission(path="apps/echo.yaml", content="spec:\n  removed: true\n")
+    assert title_for(gone, exists=True) == "feat(request): remove app echo"
     assert pr_from("remote: Create a PR\nremote:   https://git.clockmost.com/Meru/requests/pulls/42\n") == (
         42,
         "https://git.clockmost.com/Meru/requests/pulls/42",

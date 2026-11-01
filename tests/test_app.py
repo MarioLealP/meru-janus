@@ -58,9 +58,9 @@ def test_a_valid_file_is_proposed_in_the_callers_name(monkeypatch: pytest.Monkey
     async def validate(_http, _url, _submission: Submission) -> Verdict:
         return Verdict(commit="c0ffee", problems=[])
 
-    async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str]:
+    async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str, str]:
         calls.append((submission.path, who, checked))
-        return "feat(request): add app golem", "remote:   https://git.test/Meru/requests/pulls/12\n"
+        return "feat(request): add app golem", "remote:   https://git.test/Meru/requests/pulls/12\n", "h"
 
     monkeypatch.setattr(app_module.shikigami, "validate", validate)
     monkeypatch.setattr(app_module.Proposer, "propose", propose)

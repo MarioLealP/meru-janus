@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from janus.models import Submission
+from janus.remove import is_removed
 
 PR_URL = re.compile(r"(https?://\S+/pulls/(\d+))")
 
@@ -23,7 +24,8 @@ def title_for(submission: Submission, exists: bool) -> str:
     kind, file = submission.path.split("/")
     name = file.removesuffix(".yaml")
     what = "database" if kind == "databases" else "app"
-    return f"feat(request): {'change' if exists else 'add'} {what} {name}"
+    verb = ("remove" if is_removed(submission.content) else "change") if exists else "add"
+    return f"feat(request): {verb} {what} {name}"
 
 
 def topic_for(submission: Submission) -> str:
@@ -60,8 +62,8 @@ class Proposer:
             raise ProposeError(f"git {args[0]} failed: {text.strip()[-300:]}")
         return text
 
-    async def propose(self, submission: Submission, requested_by: str, checked_against: str) -> tuple[str, str]:
-        """Push the file as a PR. Returns (title, git's push output - it names the PR)."""
+    async def propose(self, submission: Submission, requested_by: str, checked_against: str) -> tuple[str, str, str]:
+        """Push the file as a PR. Returns (title, git's push output - it names the PR, the PR's head commit)."""
         async with self._lock:
             with tempfile.TemporaryDirectory(dir=self._work_dir) as tmp:
                 clone = Path(tmp)
@@ -87,11 +89,12 @@ class Proposer:
                     clone, "-c", f"user.name={self._user}", "-c", f"user.email={self._user}@clockmost.com",
                     "commit", "--quiet", f"--author={author}", "-m", message,
                 )  # fmt: skip
+                head = (await self._git(clone, "rev-parse", "HEAD")).strip()
                 output = await self._git(
                     clone, "push", "--porcelain", self._repo_url, "HEAD:refs/for/main",
                     "-o", f"topic={topic_for(submission)}", "-o", f"title={title}",
                 )  # fmt: skip
-                return title, output
+                return title, output, head
 
 
 def pr_from(output: str) -> tuple[int | None, str | None]:

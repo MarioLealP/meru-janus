@@ -1,11 +1,13 @@
-"""Reading Meru/requests's open PRs: the pending requests (D93). Read-only; the bot's token, the repo is private."""
+"""Reading Meru/requests: the open PRs (the pending requests, D93) and what's on main. Read-only; the bot's token,
+the repo is private."""
 
 import re
 
 import httpx2
 from pydantic import TypeAdapter
 
-from janus.models import Incoming, Pending
+from janus.models import Incoming, OnMain, Pending
+from janus.remove import is_removed
 
 REQUESTED_BY = re.compile(r"^Requested-By: (\S+)$", re.MULTILINE)
 
@@ -31,7 +33,14 @@ class _File(Incoming):
     filename: str
 
 
+class _Entry(Incoming):
+    name: str
+    path: str
+    type: str
+
+
 _PULLS = TypeAdapter(list[_Pull])
+_ENTRIES = TypeAdapter(list[_Entry])
 _FILES = TypeAdapter(list[_File])
 
 
@@ -58,4 +67,40 @@ async def pending(http: httpx2.AsyncClient, gitea_url: str, org: str, repo: str,
                 files=[f.filename for f in _FILES.validate_json(files.content)],
             )
         )
+    return out
+
+
+class NotOnMain(LookupError):
+    pass
+
+
+async def read_main(http: httpx2.AsyncClient, gitea_url: str, org: str, repo: str, token: str, path: str) -> str:
+    response = await http.get(
+        f"{gitea_url}/api/v1/repos/{org}/{repo}/raw/{path}",
+        params={"ref": "main"},
+        headers={"Authorization": f"token {token}"},
+    )
+    if response.status_code == 404:
+        raise NotOnMain(path)
+    response.raise_for_status()
+    return response.text
+
+
+async def on_main(http: httpx2.AsyncClient, gitea_url: str, org: str, repo: str, token: str) -> list[OnMain]:
+    """Every request file on main, apps then databases, by name."""
+    headers = {"Authorization": f"token {token}"}
+    api = f"{gitea_url}/api/v1/repos/{org}/{repo}"
+    out = []
+    for folder, kind in (("apps", "app"), ("databases", "database")):
+        response = await http.get(f"{api}/contents/{folder}", params={"ref": "main"}, headers=headers)
+        if response.status_code == 404:
+            continue  # no databases yet
+        response.raise_for_status()
+        for entry in sorted(_ENTRIES.validate_json(response.content), key=lambda e: e.name):
+            if entry.type != "file" or not entry.name.endswith(".yaml"):
+                continue
+            text = await read_main(http, gitea_url, org, repo, token, entry.path)
+            out.append(
+                OnMain(path=entry.path, kind=kind, name=entry.name.removesuffix(".yaml"), removed=is_removed(text))
+            )
     return out

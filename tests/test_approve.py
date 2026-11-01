@@ -7,6 +7,8 @@ from janus import app as app_module
 from janus.app import create_app
 from janus.approve import COOKIE, Click, NotApproved, Outcome, back_url, nonce
 from janus.config import Settings
+from janus.gitea import NotOnMain
+from janus.models import Submission, Verdict
 
 HEAD = "a" * 40
 MARIO = {"X-Authentik-Username": "akadmin", "X-Authentik-Groups": "clockmost-admins|meru-approvers"}
@@ -148,3 +150,83 @@ def test_xolotls_no_comes_back_as_a_fixed_code_never_its_text(
 def test_values_in_the_hash_are_escaped():
     url = back_url("https://a.test", app_module.approve.Result.DONE, 7, "approve", "a&r=evil", "c0ffee")
     assert url == "https://a.test/#v=requests&res=done&pr=7&dec=approve&by=a%26r%3Devil&c=c0ffee"
+
+
+KITSUNE = "metadata:\n  name: kitsune\nspec:\n  owner: mario\n"
+
+
+def removal(monkeypatch: pytest.MonkeyPatch, text: str | None = KITSUNE, problems: list[str] | None = None) -> list:
+    proposed = []
+
+    async def read_main(_http, _url, _org, _repo, _token, path: str) -> str:
+        if text is None:
+            raise NotOnMain(path)
+        return text
+
+    async def validate(_http, _url, _submission: Submission) -> Verdict:
+        return Verdict(commit="main0", problems=problems or [])
+
+    async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str, str]:
+        proposed.append((submission.path, submission.content, who))
+        return "feat(request): remove app kitsune", "remote:   https://git.test/Meru/requests/pulls/13\n", HEAD
+
+    monkeypatch.setattr(app_module.gitea, "read_main", read_main)
+    monkeypatch.setattr(app_module.shikigami, "validate", validate)
+    monkeypatch.setattr(app_module.Proposer, "propose", propose)
+    return proposed
+
+
+def remove(c: TestClient, headers: dict[str, str] = FROM_ATLAS, path: str = "apps/kitsune.yaml"):
+    return c.post("/api/janus/approve/remove", data={"path": path}, headers=headers, follow_redirects=False)
+
+
+def test_remove_opens_the_removal_pr_in_marios_name_and_approves_it_in_the_same_click(monkeypatch: pytest.MonkeyPatch):
+    proposed = removal(monkeypatch)
+    seen = []
+
+    async def hand(_http, _url, click: Click, code: str) -> Outcome:
+        seen.append((click.pr, click.head, click.decision))
+        return Outcome(pr=13, decision="approve", by="akadmin", commit="c0ffee")
+
+    monkeypatch.setattr(app_module.approve, "hand_to_xolotl", hand)
+    with client() as c:
+        r = remove(c)
+        assert proposed == [("apps/kitsune.yaml", KITSUNE + "  removed: true\n", "akadmin")]
+        q = {k: v[0] for k, v in parse_qs(urlsplit(r.headers["location"]).query).items()}
+        assert q["prompt"] == "none" and q["nonce"] == nonce("Meru", "requests", 13, HEAD, "approve")
+        r = c.get(
+            "/api/janus/approve/callback",
+            params={"code": "c", "state": q["state"]},
+            headers=MARIO,
+            follow_redirects=False,
+        )
+    assert seen == [(13, HEAD, "approve")]
+    assert landed(r) == {"v": "requests", "res": "done", "pr": "13", "dec": "remove", "by": "akadmin", "c": "c0ffee"}
+
+
+@pytest.mark.parametrize(
+    ("headers", "text", "problems", "result"),
+    [
+        (MARIO | {"Sec-Fetch-Site": "cross-site"}, KITSUNE, None, "not-atlas"),
+        (FROM_ATLAS | {"X-Authentik-Groups": "clockmost-admins"}, KITSUNE, None, "not-approver"),
+        (FROM_ATLAS, None, None, "not-on-main"),
+        (FROM_ATLAS, KITSUNE + "  removed: true\n", None, "already-removed"),
+        (FROM_ATLAS, KITSUNE, ["apps/kitsune.yaml: something"], "problems"),
+    ],
+)
+def test_a_remove_that_cant_go_ahead_opens_no_pr(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str], text: str | None, problems: list[str] | None, result: str
+):
+    proposed = removal(monkeypatch, text, problems)
+    with client() as c:
+        r = remove(c, headers=headers)
+    assert landed(r)["res"] == result and "set-cookie" not in r.headers
+    if result != "problems":
+        assert proposed == []
+
+
+def test_remove_only_takes_a_request_path(monkeypatch: pytest.MonkeyPatch):
+    proposed = removal(monkeypatch)
+    with client() as c:
+        assert landed(remove(c, path="../secrets.yaml"))["res"] == "bad-button"
+    assert proposed == []
