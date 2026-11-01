@@ -2,7 +2,7 @@
 # key and build credentials ready; it fills in owner from the request. Not deploy/meru.yaml here: the template repo
 # itself must never deploy. What the fields mean: Meru/meru appsets/meru-apps.yaml.
 owner: mario
-chart: nuwa-app-0.9.0 # the nuwa-app release this template is tested with
+chart: nuwa-app-0.12.0 # the nuwa-app release this app is tested with
 build: true # the app's own code: also its build namespace + Sindri runner
 buildLabels:
   # the checks job (.gitea/workflows/ci.yaml): uv 0.13.6-python3.15-trixie (python, uv, git)
