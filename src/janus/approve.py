@@ -7,12 +7,16 @@ it. What Janus guards is that the click was Mario's, on the atlas page:
 - start sets a 2-minute HttpOnly, SameSite=Strict cookie with a random state and what was clicked; the callback only
   passes on a code whose state matches it. A page that sends Mario's browser straight to Authentik's authorize URL
   can't set that cookie, so its code goes nowhere.
+
+Every ending sends the browser back to the atlas's Requests view with a fixed result code in the hash; the atlas
+words it. No free text travels, so a crafted link can only pick one of the atlas's own messages.
 """
 
 import hashlib
 import secrets
+from enum import StrEnum
 from typing import Annotated, Literal
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx2
 from pydantic import Field, StringConstraints, ValidationError
@@ -24,6 +28,42 @@ Head = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
 COOKIE = "janus_approval"
 COOKIE_PATH = "/api/janus/approve"
 COOKIE_SECONDS = 120
+
+
+class Result(StrEnum):
+    """How an approval ended - the atlas has the words for each (Requests.svelte RESULTS)."""
+
+    DONE = "done"
+    NOT_ATLAS = "not-atlas"
+    NOT_APPROVER = "not-approver"
+    BAD_BUTTON = "bad-button"
+    NOT_YOURS = "not-yours"
+    SIGN_IN = "sign-in"
+    AUTHENTIK_NO = "authentik-no"
+    REFUSED = "refused"  # Xolotl 403: the token didn't check out
+    CHANGED = "changed"  # Xolotl 409: the PR moved on, closed, or can't be stamped safely
+    PROBLEMS = "problems"  # Xolotl 422: Shikigami found problems against today's main
+    DOWN = "down"  # Xolotl unreachable or not ready
+
+
+XOLOTL_RESULTS = {403: Result.REFUSED, 409: Result.CHANGED, 422: Result.PROBLEMS}
+
+
+def result_of(status: int) -> Result:
+    return XOLOTL_RESULTS.get(status, Result.DOWN)
+
+
+def back_url(
+    atlas: str,
+    result: Result,
+    pr: int | None = None,
+    decision: str | None = None,
+    by: str | None = None,
+    commit: str | None = None,
+) -> str:
+    """The atlas's Requests view, with the result in the hash (never sent to a server, so never in a log)."""
+    fields = {"v": "requests", "res": result.value, "pr": pr, "dec": decision, "by": by, "c": commit}
+    return f"{atlas}/#" + "&".join(f"{k}={quote(str(v), safe='')}" for k, v in fields.items() if v is not None)
 
 
 class Click(Value):

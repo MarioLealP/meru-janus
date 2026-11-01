@@ -3,7 +3,6 @@ Caddy), checks them with Shikigami, and opens them as PRs on Meru/requests that 
 
 J1: submit + list. J2 (D98): Approve / Deny start Authentik's silent check and hand the one-time code to Xolotl."""
 
-import html
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -11,7 +10,7 @@ from urllib.parse import parse_qs
 
 import httpx2
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import ValidationError
 
 from janus import approve, gitea, shikigami
@@ -93,15 +92,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not approve.from_the_atlas(
             request.headers.get("sec-fetch-site"), request.headers.get("origin"), s.atlas_origin
         ):
-            return page(403, "Not from the atlas", "Approvals only start from the atlas's own page.")
+            return back(approve.Result.NOT_ATLAS, pr)
         groups = request.headers.get(s.groups_header, "").split("|")
         if s.approvers_group not in groups:
-            return page(403, "Not an approver", f"Only {s.approvers_group} can approve Meru requests.")
+            return back(approve.Result.NOT_APPROVER, pr)
         form = parse_qs((await request.body()).decode(), max_num_fields=4)
         try:
             click = approve.new_click(pr, form["head"][0], form["decision"][0])  # ty: ignore[invalid-argument-type]
         except KeyError, ValidationError:
-            return page(400, "Bad button", "The button didn't say which commit and decision it was for.")
+            return back(approve.Result.BAD_BUTTON, pr)
         url = approve.authorize_url(
             s.authorize_url, s.approvals_client_id, s.approvals_redirect_uri, click, s.org, s.requests_repo
         )
@@ -119,37 +118,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/janus/approve/callback")
     async def approve_callback(request: Request) -> Response:
-        """Authentik's answer: a code (or login_required) and the state; Xolotl gets the code if the state is ours."""
+        """Authentik's answer: a code (or login_required) and the state; Xolotl gets the code if the state is ours.
+        Every ending goes back to the atlas's Requests view with a fixed result code (no page of Janus's own)."""
         click = approve.read_cookie(request.cookies.get(approve.COOKIE))
         query = request.query_params
         if not approve.same_click(click, query.get("state")):
-            return done(page(400, "Not your click", "This answer doesn't belong to an approval started here."))
+            return done(back(approve.Result.NOT_YOURS))
         assert click is not None  # same_click said so
         if error := query.get("error"):
+            log.warning("approval of PR #%d: Authentik answered %s", click.pr, error)
             if error in ("login_required", "consent_required", "interaction_required"):
-                return done(page(401, "Sign in again", "Your atlas sign-in ran out: open the atlas and click again."))
-            return done(page(403, "Authentik said no", f"Authentik answered {error}."))
+                return done(back(approve.Result.SIGN_IN, click.pr, click.decision))
+            return done(back(approve.Result.AUTHENTIK_NO, click.pr, click.decision))
         code = query.get("code")
         if not code:
-            return done(page(400, "No code", "Authentik's answer had no code."))
+            return done(back(approve.Result.AUTHENTIK_NO, click.pr, click.decision))
         try:
             outcome = await approve.hand_to_xolotl(state["http"], s.xolotl_approve_url, click, code)
         except approve.NotApproved as e:
             log.warning("approval of PR #%d not done: %s %s", click.pr, e.status, e.reason)
-            return done(page(e.status, f"PR #{click.pr} not {click.decision}d", e.reason))
-        if outcome.decision == "approve":
-            text = f"Approved by {outcome.by} - on main in {outcome.commit}."
-        else:
-            text = f"Denied by {outcome.by} - the PR is closed."
-        return done(page(200, f"PR #{outcome.pr} {outcome.decision}d", text))
+            return done(back(approve.result_of(e.status), click.pr, click.decision))
+        return done(back(approve.Result.DONE, outcome.pr, outcome.decision, outcome.by, outcome.commit))
 
-    def page(status: int, title: str, text: str) -> HTMLResponse:
-        body = (
-            f"<!doctype html><meta charset=utf-8><title>{html.escape(title)}</title>"
-            f"<h1>{html.escape(title)}</h1><p>{html.escape(text)}</p>"
-            f'<p><a href="{html.escape(s.atlas_origin)}/">Back to the atlas</a></p>'
-        )
-        return HTMLResponse(body, status_code=status)
+    def back(
+        result: approve.Result,
+        pr: int | None = None,
+        decision: str | None = None,
+        by: str | None = None,
+        commit: str | None = None,
+    ) -> Response:
+        return RedirectResponse(approve.back_url(s.atlas_origin, result, pr, decision, by, commit), status_code=303)
 
     def done(response: Response) -> Response:
         response.delete_cookie(approve.COOKIE, path=approve.COOKIE_PATH, secure=True, httponly=True, samesite="strict")
