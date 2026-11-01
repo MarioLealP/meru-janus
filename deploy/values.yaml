@@ -7,5 +7,5 @@ name: janus
 owner: mario
 image:
   repository: zot.clockmost.com/meru/janus
-  digest: sha256:af4bf33797b28289ce99b95c393b9d77ed82cab5c03d7e636dbf4083300d98d7
-  tag: "117ca84176f7"
+  digest: sha256:20eb28d51ce336d99c5269bee4d50a1783690112f463d0f7ac732487898b12c2
+  tag: "62d0f65585ff"
