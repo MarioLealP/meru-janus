@@ -9,7 +9,8 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+# the dependencies only: the image runs the code from src/ (the package build is for the janus command line)
+RUN uv sync --frozen --no-dev --no-install-project
 COPY src/ src/
 
 # The root filesystem is read-only in Meru, so no .pyc files; the numeric user matches nuwa-app's runAsUser.

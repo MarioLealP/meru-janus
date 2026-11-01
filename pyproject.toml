@@ -10,6 +10,13 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.scripts]
+janus = "janus.cli:main" # the command line (D94): uv tool install git+ssh://git@git.clockmost.com/Meru/janus.git
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14"]
+build-backend = "uv_build"
+
 [dependency-groups]
 dev = [
     "httpx2>=2.16.0",
@@ -19,8 +26,6 @@ dev = [
     "ty>=0.0.95",
 ]
 
-[tool.uv]
-package = false # an app, not a library: the code runs from src/
 
 [tool.ruff]
 line-length = 120
