@@ -1,0 +1,11 @@
+# janus's deployment, rendered by Argo CD with Meru's nuwa-app chart. Shikigami fills in what comes from the
+# request (owner, size, route) and adds deploy/meru.yaml - the marker that makes Meru deploy this repo - once the
+# app's namespace fence, signing key and build credentials exist. CI writes the image after each build; until the
+# first one the digest is a placeholder: nuwa-app renders everything but the workload (the build runner comes up, no
+# pod waits on an image that doesn't exist yet).
+name: janus
+owner: "" # from the request
+image:
+  repository: zot.clockmost.com/meru/janus
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  tag: ""

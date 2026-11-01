@@ -1,0 +1,108 @@
+# janus's CI on Meru's runner (Sindri, namespace janus-build: each job is its own pod).
+# checks: every check scripts/check.sh runs locally - lint, format, types, lockfile, tests. No credentials here.
+# build: after the checks, through scripts/build.sh (waits for memory, gives buildkitd time to start).
+# Pull requests: build only. Main: fetch janus's Zot login + signing key from OpenBao
+# (into memory), build, push to Zot, sign, then write the new digest into deploy/values.yaml - Argo CD rolls that out.
+# The deploy commit itself doesn't trigger a run (paths-ignore); rebuild main by hand with "Run workflow".
+# (The template repo Meru/nuwa-python has no runner, so its own jobs are skipped.)
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore: [deploy/**]
+  workflow_dispatch:
+
+env:
+  IMAGE: zot.clockmost.com/meru/janus
+  COSIGN_VERSION: v3.1.4
+  COSIGN_SHA256: 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
+
+jobs:
+  checks:
+    if: gitea.repository != 'Meru/nuwa-python'
+    runs-on: sindri-check # python 3.15 + uv + git (see the runner's labels)
+    env:
+      HOME: /tmp
+      UV_CACHE_DIR: /tmp/uv-cache
+      UV_PYTHON_DOWNLOADS: never # the image's python only
+    steps:
+      - name: checkout
+        run: |
+          git config --global --add safe.directory "$PWD" # the workspace volume isn't owned by the job's user
+          git init --quiet .
+          git remote add origin "https://sindri:${{ gitea.token }}@git.clockmost.com/${{ gitea.repository }}.git"
+          git fetch --quiet --depth 1 origin "${{ gitea.ref }}" # a PR's commit lives under refs/pull/<n>/...
+          git checkout --quiet -B work FETCH_HEAD
+
+      - name: checks
+        run: |
+          uv sync --frozen
+          scripts/check.sh
+
+  build:
+    needs: checks
+    runs-on: sindri
+    steps:
+      - name: checkout
+        run: |
+          git config --global --add safe.directory "$PWD"
+          git init --quiet .
+          git remote add origin "https://sindri:${{ gitea.token }}@git.clockmost.com/${{ gitea.repository }}.git"
+          git fetch --quiet --depth 1 origin "${{ gitea.ref }}" # a PR's commit lives under refs/pull/<n>/...
+          git checkout --quiet -B work FETCH_HEAD
+          echo "TAG=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
+
+      - name: build
+        if: gitea.ref != 'refs/heads/main'
+        run: scripts/build.sh build --frontend dockerfile.v0 --local context=. --local dockerfile=.
+
+      - name: fetch keys
+        if: gitea.ref == 'refs/heads/main'
+        # The job's 10-minute signer token (Meru/sindri) -> an OpenBao token for role meru-janus-build -> janus's Zot
+        # login and signing key, written to the in-memory /keys. Values are base64 in OpenBao, so sed can take them
+        # out of the JSON. Nothing is printed.
+        run: |
+          export SSL_CERT_FILE="$BAO_CACERT"
+          login=$(printf '{"role":"%s","jwt":"%s"}' "$BAO_ROLE" "$(cat "$BAO_JWT_FILE")")
+          token=$(wget -q -O- --header "Content-Type: application/json" --post-data "$login" \
+            "$BAO_ADDR/v1/auth/kubernetes/login" | sed -n 's/.*"client_token":"\([^"]*\)".*/\1/p')
+          test -n "$token"
+          keys=$(wget -q -O- --header "X-Vault-Token: $token" "$BAO_ADDR/v1/$BAO_KEYS_PATH")
+          field() { printf '%s' "$keys" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p" | base64 -d; }
+          mkdir -p /keys/zot /keys/cosign
+          field zot_config_b64 > /keys/zot/config.json
+          field cosign_key_b64 > /keys/cosign/cosign.key
+          field cosign_password_b64 > /keys/cosign/password
+          test -s /keys/zot/config.json && test -s /keys/cosign/cosign.key && test -s /keys/cosign/password
+          wget -q -O- --header "X-Vault-Token: $token" --post-data '' "$BAO_ADDR/v1/auth/token/revoke-self" >/dev/null
+          echo "keys fetched for $BAO_ROLE"
+
+      - name: build and push
+        if: gitea.ref == 'refs/heads/main'
+        run: |
+          scripts/build.sh build --frontend dockerfile.v0 --local context=. --local dockerfile=. \
+            --output "type=image,name=$IMAGE:$TAG,push=true,registry.insecure=true" --metadata-file /tmp/build.json
+          digest=$(sed -n 's/.*"containerimage.digest": *"\(sha256:[0-9a-f]*\)".*/\1/p' /tmp/build.json)
+          test -n "$digest"
+          echo "DIGEST=$digest" >> "$GITHUB_ENV"
+          echo "pushed $IMAGE:$TAG@$digest"
+
+      - name: sign
+        if: gitea.ref == 'refs/heads/main'
+        run: |
+          wget -q -O /tmp/cosign "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-amd64"
+          echo "$COSIGN_SHA256  /tmp/cosign" | sha256sum -c -
+          chmod +x /tmp/cosign
+          # Key-signed, no public transparency log (Meru's images stay private), and the classic .sig format,
+          # which Kyverno verifies.
+          COSIGN_PASSWORD="$(cat /keys/cosign/password)" /tmp/cosign sign --yes \
+            --key /keys/cosign/cosign.key --use-signing-config=false --tlog-upload=false \
+            --new-bundle-format=false --allow-http-registry "$IMAGE@$DIGEST"
+
+      - name: deploy
+        if: gitea.ref == 'refs/heads/main'
+        run: |
+          sed -i "s|^  digest: .*|  digest: $DIGEST|; s|^  tag: .*|  tag: \"$TAG\"|" deploy/values.yaml
+          git -c user.name=sindri -c user.email=sindri@clockmost.com commit --quiet -am "chore(deploy): janus $TAG"
+          git push --quiet origin HEAD:main

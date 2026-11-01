@@ -1,0 +1,9 @@
+# Becomes deploy/meru.yaml - the marker that makes Meru deploy this repo - once Shikigami has the app's fence, signing
+# key and build credentials ready; it fills in owner from the request. Not deploy/meru.yaml here: the template repo
+# itself must never deploy. What the fields mean: Meru/meru appsets/meru-apps.yaml.
+owner: ""
+chart: nuwa-app-0.9.0 # the nuwa-app release this template is tested with
+build: true # the app's own code: also its build namespace + Sindri runner
+buildLabels:
+  # the checks job (.gitea/workflows/ci.yaml): uv 0.13.6-python3.15-trixie (python, uv, git)
+  sindri-check: ghcr.io/astral-sh/uv@sha256:f68dfb3eaf23a53afb5f74833bdacc0ce586d69f8063c48f9f3ebbe42e048e4a
