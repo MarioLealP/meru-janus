@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     # D94); requests without it are refused - nothing reaches Janus around Caddy (its NetworkPolicy).
     identity_header: str = "X-Authentik-Username"
 
+    # Approvals (D98): Janus starts Authentik's silent check for the xolotl-approvals app and hands the code to Xolotl,
+    # which alone can redeem it. No secret here.
+    authorize_url: str = "https://auth.clockmost.com/application/o/authorize/"
+    approvals_client_id: str = "xolotl-approvals"
+    approvals_redirect_uri: str = "https://atlas.clockmost.com/api/janus/approve/callback"
+    atlas_origin: str = "https://atlas.clockmost.com"
+    xolotl_approve_url: str = "http://xolotl.xolotl.svc/approve"
+    approvers_group: str = "meru-approvers"  # only to fail early with a clear page - Xolotl checks the token itself
+    groups_header: str = "X-Authentik-Groups"  # forward-auth's list, "|"-separated
+
     work_dir: Path = Path("/tmp")  # the root filesystem is read-only; each proposal clones into its own folder here
     http_timeout: float = 20.0
     git_timeout: float = 60.0
