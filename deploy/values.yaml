@@ -7,8 +7,8 @@ name: janus
 owner: mario
 image:
   repository: zot.clockmost.com/meru/janus
-  digest: sha256:20eb28d51ce336d99c5269bee4d50a1783690112f463d0f7ac732487898b12c2
-  tag: "62d0f65585ff"
+  digest: sha256:2617b3b40ab9ab3206e79a6740db7a9a5ce5e327051ff9ba83d731da6e372104
+  tag: "773af2f538a0"
 # Its Gitea bot's token (meru-janus-identities.sh -> apps/meru/janus/eso/gitea): read on Meru/requests, enough to
 # open AGit PRs there (D93). Without it Janus answers 503 on submit and only lists.
 secretEnv:
