@@ -4,7 +4,7 @@
 # first one the digest is a placeholder: nuwa-app renders everything but the workload (the build runner comes up, no
 # pod waits on an image that doesn't exist yet).
 name: janus
-owner: "" # from the request
+owner: mario
 image:
   repository: zot.clockmost.com/meru/janus
   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

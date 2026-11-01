@@ -1,7 +1,7 @@
 # Becomes deploy/meru.yaml - the marker that makes Meru deploy this repo - once Shikigami has the app's fence, signing
 # key and build credentials ready; it fills in owner from the request. Not deploy/meru.yaml here: the template repo
 # itself must never deploy. What the fields mean: Meru/meru appsets/meru-apps.yaml.
-owner: ""
+owner: mario
 chart: nuwa-app-0.9.0 # the nuwa-app release this template is tested with
 build: true # the app's own code: also its build namespace + Sindri runner
 buildLabels:
