@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints
 
 # The same shape Shikigami's /validate accepts (D96): a request file, never anything else in the repo.
 RequestPath = Annotated[str, StringConstraints(pattern=r"^(apps|databases)/[a-z0-9]([-a-z0-9]*[a-z0-9])?\.yaml$")]
@@ -21,6 +21,18 @@ class Submission(Value):
 
     path: RequestPath
     content: Annotated[str, StringConstraints(max_length=65536)]
+
+
+class Submit(Value):
+    """What the submit endpoint takes: the request file, plus the values of the secrets it names that aren't generated
+    (D99). The values go to OpenBao only - never to Shikigami, the PR or a log."""
+
+    path: RequestPath
+    content: Annotated[str, StringConstraints(max_length=65536)]
+    secrets: dict[Annotated[str, StringConstraints(max_length=30)], SecretStr] = Field(default_factory=dict)
+
+    def submission(self) -> Submission:
+        return Submission(path=self.path, content=self.content)
 
 
 class Verdict(Incoming):

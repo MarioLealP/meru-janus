@@ -3,6 +3,10 @@
     janus pending                 the requests waiting for approval
     janus submit FILE [FILE ...]  propose request files: .../apps/<name>.yaml or .../databases/<name>.yaml
 
+A new app's request may name secrets (`spec.secrets: [{name, generate}]`, D99): for each one not generated, submit
+takes the value from JANUS_SECRET_<NAME> (discord-token -> JANUS_SECRET_DISCORD_TOKEN) or asks for it (nothing shows
+while typing). Janus writes the values to OpenBao before the PR opens; they never go in the file, the PR or a log.
+
 It signs in as an Authentik service account (agent-claude by default): the account's app password - from KeePassXC
 through the Secret Service, or JANUS_CLIENT_PASSWORD where there's no desktop - is exchanged for a Bearer JWT for
 the atlas application (client credentials). The token lives in memory for this one run, never on disk. Caddy checks
@@ -12,9 +16,11 @@ Only the shared models come from the server's code; nothing here reads Janus's o
 """
 
 import argparse
+import getpass
+import os
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import httpx2
@@ -22,6 +28,7 @@ from pydantic import SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from janus.models import Incoming, Pending, Rejected, Submission, Submitted
+from janus.request_secrets import requested
 
 # What the token must carry for Authentik's proxy outpost to know who it is: without ak_proxy (and the profile claims
 # it fills the X-Authentik-* headers from) the token is valid but the outpost answers 403.
@@ -91,6 +98,32 @@ def submission(file: Path) -> Submission:
         raise Failed(f"{file}: not a request file (apps/<name>.yaml or databases/<name>.yaml, at most 64 KiB)") from e
 
 
+def env_name(secret: str) -> str:
+    return "JANUS_SECRET_" + secret.upper().replace("-", "_")
+
+
+def secret_values(
+    item: Submission,
+    ask: Callable[[str], str] = getpass.getpass,
+    environ: Mapping[str, str] = os.environ,
+    interactive: Callable[[], bool] = sys.stdin.isatty,
+) -> dict[str, SecretStr]:
+    """The values of the secrets the request names and doesn't generate: from the environment, else asked for."""
+    values = {}
+    for secret in requested(item.path, item.content):
+        if secret.generate:
+            continue
+        value = environ.get(env_name(secret.name))
+        if value is None:
+            if not interactive():
+                raise Failed(f"{item.path}: no value for {secret.name} - set {env_name(secret.name)}")
+            value = ask(f"{item.path} {secret.name} (hidden): ")
+        if not value:
+            raise Failed(f"{item.path}: empty value for {secret.name}")
+        values[secret.name] = SecretStr(value)
+    return values
+
+
 class Janus:
     def __init__(self, http: httpx2.Client, s: ClientSettings) -> None:
         self._http, self._s = http, s
@@ -111,8 +144,11 @@ class Janus:
             raise Failed(f"Janus: {response.status_code} {response.text[:200]}")
         return [Pending.model_validate(item) for item in response.json()]
 
-    def submit(self, item: Submission) -> Submitted | Rejected:
-        response = self._call("POST", "/requests", item.model_dump())
+    def submit(self, item: Submission, values: Mapping[str, SecretStr] | None = None) -> Submitted | Rejected:
+        body = item.model_dump()
+        if values:
+            body["secrets"] = {name: value.get_secret_value() for name, value in values.items()}
+        response = self._call("POST", "/requests", body)
         if response.status_code == 201:
             return Submitted.model_validate_json(response.content)
         if response.status_code == 422:
@@ -150,9 +186,10 @@ def run(argv: Sequence[str], http: httpx2.Client, s: ClientSettings) -> int:
         return 0
 
     items = [submission(f) for f in args.files]  # every file checked before anything is sent
+    values = [secret_values(item) for item in items]  # and every value asked for
     status = 0
-    for item in items:
-        answer = janus.submit(item)
+    for item, given in zip(items, values, strict=True):
+        answer = janus.submit(item, given)
         if args.json:
             print(answer.model_dump_json())
         elif isinstance(answer, Submitted):

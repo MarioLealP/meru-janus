@@ -12,11 +12,11 @@ from urllib.parse import parse_qs
 import httpx2
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
-from pydantic import TypeAdapter, ValidationError
+from pydantic import SecretStr, TypeAdapter, ValidationError
 
-from janus import approve, gitea, remove, shikigami
+from janus import approve, gitea, remove, request_secrets, shikigami
 from janus.config import Settings
-from janus.models import OnMain, Pending, Rejected, RequestPath, Submission, Submitted
+from janus.models import OnMain, Pending, Rejected, RequestPath, Submission, Submit, Submitted
 from janus.propose import ProposeError, Proposer, pr_from
 
 log = logging.getLogger("janus")
@@ -40,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="janus", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     repo_url = f"{s.gitea_url}/{s.org}/{s.requests_repo}.git"
     proposer = Proposer(repo_url, s.gitea_user, token, s.work_dir, s.git_timeout) if token else None
+    vault = request_secrets.Vault(s.openbao_addr, s.openbao_role, s.openbao_dir, s.http_timeout)
 
     @app.middleware("http")
     async def identity_guard(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
@@ -73,9 +74,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except httpx2.HTTPError as e:
             raise HTTPException(502, f"can't read Meru/requests: {type(e).__name__}") from e
 
-    async def check_and_propose(submission: Submission, who: str) -> tuple[Submitted, str] | Rejected:
-        """Shikigami checks the file against main; a valid one becomes a PR (or updates the open PR for the same
-        file). Returns the PR and its head commit."""
+    async def check_and_propose(
+        submission: Submission, who: str, values: dict[str, SecretStr] | None = None
+    ) -> tuple[Submitted, str] | Rejected:
+        """Shikigami checks the file against main; a new app's secret values go to OpenBao (D99); then a valid file
+        becomes a PR (or updates the open PR for the same file). Returns the PR and its head commit."""
         bot()
         assert proposer is not None  # bot() said there's a token
         try:
@@ -84,6 +87,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(502, f"Shikigami can't check it right now: {type(e).__name__}") from e
         if verdict.problems:
             return Rejected(problems=verdict.problems, checked_against=verdict.commit)
+        if problem := await store_secrets(submission, values or {}):
+            return Rejected(problems=[problem], checked_against=verdict.commit)
         try:
             title, output, head = await proposer.propose(submission, who, verdict.commit)
         except ProposeError as e:
@@ -93,11 +98,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         log.info("%s proposed %s: %s", who, submission.path, url or "PR not named in the push answer")
         return Submitted(pr=pr, url=url, title=title, checked_against=verdict.commit), head
 
+    async def store_secrets(submission: Submission, values: dict[str, SecretStr]) -> str | None:
+        """A new app's secret values into OpenBao before its PR opens (D99) - so a request that reaches Mario has
+        fresh values. Returns why not, or None. Only for apps not on main: changing a running app's secrets is
+        later work, and OpenBao would refuse it anyway."""
+        wanted = request_secrets.requested(submission.path, submission.content)
+        if not wanted:
+            return f"values for secrets {submission.path} doesn't name" if values else None
+        try:
+            await gitea.read_main(state["http"], s.gitea_url, s.org, s.requests_repo, bot(), submission.path)
+        except gitea.NotOnMain:
+            pass
+        else:
+            return (
+                "secret values for an app that's already on main - changing them comes later (D99)" if values else None
+            )
+        app_name = submission.path.removeprefix("apps/").removesuffix(".yaml")
+        try:
+            filled = request_secrets.values_for(wanted, values)
+            if not vault.ready:
+                raise request_secrets.NotWritten("Janus has no OpenBao login yet")
+            await vault.create_env(app_name, filled)
+        except request_secrets.NotWritten as e:
+            return f"secrets not written: {e}"
+        except httpx2.HTTPError as e:
+            return f"secrets not written: OpenBao unreachable ({type(e).__name__})"
+        log.info(
+            "%s: %d secret value(s) written to OpenBao (%d generated)",
+            app_name,
+            len(filled),
+            sum(x.generate for x in wanted),
+        )
+        return None
+
     @app.post("/api/janus/requests", status_code=201, response_model=Submitted, responses={422: {"model": Rejected}})
-    async def submit(submission: Submission, request: Request) -> Submitted | JSONResponse:
-        """Propose a request file. Shikigami checks it against main first; a valid one becomes a PR (or updates the
-        open PR for the same file). Who asked is the Authentik identity Caddy passed on."""
-        answer = await check_and_propose(submission, request.headers[s.identity_header])
+    async def submit(body: Submit, request: Request) -> Submitted | JSONResponse:
+        """Propose a request file, with the values of the secrets it names (D99). Shikigami checks it against main
+        first; a new app's secret values go to OpenBao; then a valid file becomes a PR (or updates the open PR for the
+        same file). Who asked is the Authentik identity Caddy passed on."""
+        answer = await check_and_propose(body.submission(), request.headers[s.identity_header], body.secrets)
         if isinstance(answer, Rejected):
             return JSONResponse(answer.model_dump(), status_code=422)
         return answer[0]
