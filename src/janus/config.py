@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     approvers_group: str = "meru-approvers"  # only to fail early with a clear page - Xolotl checks the token itself
     groups_header: str = "X-Authentik-Groups"  # forward-auth's list, "|"-separated
 
+    # A new app's secret values (D99): Janus's own OpenBao login, create-only on apps/meru/<app>/eso/env.
+    openbao_addr: str = "https://openbao.clockmost.internal:8204"
+    openbao_role: str = "meru-janus-secrets"
+    openbao_dir: Path = Path("/var/run/meru/openbao")  # token, ca.crt (nuwa-app openbaoLogin)
+
     work_dir: Path = Path("/tmp")  # the root filesystem is read-only; each proposal clones into its own folder here
     http_timeout: float = 20.0
     git_timeout: float = 60.0

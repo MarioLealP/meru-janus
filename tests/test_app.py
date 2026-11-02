@@ -99,3 +99,81 @@ def test_pending_lists_the_open_prs(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(app_module.gitea, "pending", pending)
     with client() as c:
         assert c.get("/api/janus/requests", headers=ID).json() == [one.model_dump()]
+
+
+TANUKI = (
+    "kind: App\nmetadata:\n  name: tanuki\nspec:\n  owner: mario\n  secrets:\n"
+    "    - name: discord-token\n    - name: session-key\n      generate: true\n"
+)
+
+
+def secrets_flow(monkeypatch: pytest.MonkeyPatch, on_main: bool = False, refuse: str | None = None) -> list[str]:
+    """Shikigami says fine; records the order of OpenBao writes and PRs."""
+    from janus.gitea import NotOnMain
+    from janus.request_secrets import NotWritten, Vault
+
+    order: list[str] = []
+
+    async def validate(*_args) -> Verdict:
+        return Verdict(commit="c0ffee", problems=[])
+
+    async def read_main(_http, _url, _org, _repo, _token, path: str) -> str:
+        if not on_main:
+            raise NotOnMain(path)
+        return TANUKI
+
+    async def create_env(_self, app: str, values: dict[str, str]) -> None:
+        if refuse:
+            raise NotWritten(refuse)
+        order.append(f"openbao {app} {sorted(values)} typed={values['discord-token']}")
+
+    async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str, str]:
+        assert "typed-value" not in submission.content  # the values never reach the PR
+        order.append(f"pr {submission.path}")
+        return "feat(request): add app tanuki", "remote:   https://git.test/Meru/requests/pulls/14\n", "h"
+
+    monkeypatch.setattr(app_module.shikigami, "validate", validate)
+    monkeypatch.setattr(app_module.gitea, "read_main", read_main)
+    monkeypatch.setattr(Vault, "create_env", create_env)
+    monkeypatch.setattr(Vault, "ready", property(lambda _self: True))
+    monkeypatch.setattr(app_module.Proposer, "propose", propose)
+    return order
+
+
+def submit_tanuki(c: TestClient, secrets: dict[str, str] | None = None):
+    body = {"path": "apps/tanuki.yaml", "content": TANUKI, "secrets": secrets or {"discord-token": "typed-value"}}
+    return c.post("/api/janus/requests", json=body, headers=ID)
+
+
+def test_a_new_apps_values_go_to_openbao_before_its_pr_opens(monkeypatch: pytest.MonkeyPatch):
+    order = secrets_flow(monkeypatch)
+    with client() as c:
+        assert submit_tanuki(c).status_code == 201
+    assert order == ["openbao tanuki ['discord-token', 'session-key'] typed=typed-value", "pr apps/tanuki.yaml"]
+
+
+@pytest.mark.parametrize(
+    ("on_main", "refuse", "secrets", "why"),
+    [
+        (False, "tanuki already has secret values in OpenBao", None, "already has secret values"),
+        (False, None, {"session-key": "x"}, "no value for discord-token"),
+        (True, None, None, "already on main"),
+    ],
+)
+def test_no_pr_when_the_values_cant_be_written(
+    monkeypatch: pytest.MonkeyPatch, on_main: bool, refuse: str | None, secrets: dict | None, why: str
+):
+    order = secrets_flow(monkeypatch, on_main=on_main, refuse=refuse)
+    with client() as c:
+        r = submit_tanuki(c, secrets)
+    assert r.status_code == 422 and why in r.json()["problems"][0]
+    assert order == []
+    assert "typed-value" not in r.text
+
+
+def test_values_for_a_request_without_secrets_are_refused(monkeypatch: pytest.MonkeyPatch):
+    order = secrets_flow(monkeypatch)
+    with client() as c:
+        body = {**GOOD, "secrets": {"x": "y"}}
+        r = c.post("/api/janus/requests", json=body, headers=ID)
+    assert r.status_code == 422 and order == []

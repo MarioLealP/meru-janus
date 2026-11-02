@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.162.0",
     "httpx2>=2.16.0",
     "pydantic-settings>=2.16.2",
+    "pyyaml>=6.0.3",
     "uvicorn>=0.54.0",
 ]
 
@@ -24,6 +25,7 @@ dev = [
     "pytest-asyncio>=1.4.1.post1",
     "ruff>=0.17.3",
     "ty>=0.0.95",
+    "types-pyyaml>=6.0.12.20261030",
 ]
 
 

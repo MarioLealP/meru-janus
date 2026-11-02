@@ -17,6 +17,10 @@ secretEnv:
     key: token
 externalSecrets:
   gitea: {}
+# Its own OpenBao login (D99, meru-janus-identities.sh step 3): create-only on apps/meru/<app>/eso/env, for a new
+# app's secret values. Without the role it takes no secret values; requests without secrets work as before.
+openbaoLogin:
+  enabled: true
 # Who may connect (D97): the host side - Caddy, Gitea and Zabbix are still Docker containers, so their addresses,
 # plus the node for the kubelet's probes - the atlas UI reaches Janus through Caddy, never in-cluster. Everything else in the cluster is refused. When Caddy and Gitea move
 # into the cluster (D24) the Docker range goes for their namespaces.

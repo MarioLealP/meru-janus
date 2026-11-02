@@ -6,7 +6,8 @@ import httpx2
 import pytest
 from pydantic import SecretStr
 
-from janus.cli import ClientSettings, Failed, run
+from janus.cli import ClientSettings, Failed, run, secret_values
+from janus.models import Submission
 
 TOKEN_URL = "https://auth.test/application/o/token/"
 URL = "https://atlas.test/api/janus"
@@ -108,3 +109,29 @@ def test_a_file_outside_apps_or_databases_is_refused_before_signing_in(tmp_path:
 def test_a_refused_sign_in_says_so():
     with pytest.raises(Failed, match="Authentik refused the sign-in as agent-claude: 400"):
         call(Fake(refuse_sign_in=True), "pending")
+
+
+TANUKI = (
+    "kind: App\nmetadata:\n  name: tanuki\nspec:\n  owner: mario\n  secrets:\n"
+    "    - name: discord-token\n    - name: session-key\n      generate: true\n"
+)
+ITEM = Submission(path="apps/tanuki.yaml", content=TANUKI)
+
+
+def test_values_come_from_the_environment_first_then_a_hidden_prompt():
+    from_env = secret_values(ITEM, ask=pytest.fail, environ={"JANUS_SECRET_DISCORD_TOKEN": "env-value"})
+    assert {k: v.get_secret_value() for k, v in from_env.items()} == {"discord-token": "env-value"}
+    asked: list[str] = []
+
+    def ask(prompt: str) -> str:
+        asked.append(prompt)
+        return "typed"
+
+    typed = secret_values(ITEM, ask=ask, environ={}, interactive=lambda: True)
+    assert {k: v.get_secret_value() for k, v in typed.items()} == {"discord-token": "typed"}
+    assert asked == ["apps/tanuki.yaml discord-token (hidden): "]  # the generated one isn't asked for
+
+
+def test_without_a_terminal_a_missing_value_fails_before_anything_is_sent():
+    with pytest.raises(Failed, match="JANUS_SECRET_DISCORD_TOKEN"):
+        secret_values(ITEM, environ={}, interactive=lambda: False)
