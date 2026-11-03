@@ -17,8 +17,8 @@ APP = "apiVersion: meru.clockmost.com/v1\nkind: App\nmetadata:\n  name: golem\n"
 class Fake:
     """Authentik's token endpoint and Janus behind Caddy."""
 
-    def __init__(self, reject: bool = False, refuse_sign_in: bool = False) -> None:
-        self.reject, self.refuse_sign_in = reject, refuse_sign_in
+    def __init__(self, reject: bool = False, refuse_sign_in: bool = False, on_main: tuple[str, ...] = ()) -> None:
+        self.reject, self.refuse_sign_in, self.on_main = reject, refuse_sign_in, on_main
         self.sign_ins: list[dict[str, list[str]]] = []
         self.calls: list[tuple[str, str, str | None, dict | None]] = []
 
@@ -31,6 +31,12 @@ class Fake:
             return httpx2.Response(200, json={"access_token": "jwt", "token_type": "Bearer", "expires_in": 300})
         body = json.loads(request.content) if request.content else None
         self.calls.append((request.method, url, request.headers.get("authorization"), body))
+        if request.method == "GET" and url.endswith("/apps"):
+            on_main = [
+                {"path": path, "kind": "app", "name": path.removeprefix("apps/").removesuffix(".yaml"), "removed": True}
+                for path in self.on_main
+            ]
+            return httpx2.Response(200, json=on_main)
         if request.method == "GET":
             pending = {
                 "pr": 3,
@@ -135,3 +141,34 @@ def test_values_come_from_the_environment_first_then_a_hidden_prompt():
 def test_without_a_terminal_a_missing_value_fails_before_anything_is_sent():
     with pytest.raises(Failed, match="JANUS_SECRET_DISCORD_TOKEN"):
         secret_values(ITEM, environ={}, interactive=lambda: False)
+
+
+@pytest.fixture
+def tanuki_file(tmp_path: Path) -> Path:
+    path = tmp_path / "apps" / "tanuki.yaml"
+    path.parent.mkdir()
+    path.write_text(TANUKI)
+    return path
+
+
+def test_a_file_already_on_main_keeps_its_apps_secrets(tanuki_file: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("JANUS_SECRET_DISCORD_TOKEN", raising=False)  # none needed: a restore (D106) asks for nothing
+    fake = Fake(on_main=("apps/tanuki.yaml",))
+    assert call(fake, "submit", str(tanuki_file)) == 0
+    [(_, apps, _, _), (_, _, _, body)] = fake.calls
+    assert apps == f"{URL}/apps"
+    assert body == {"path": "apps/tanuki.yaml", "content": TANUKI}  # no "secrets"
+
+
+def test_a_new_files_secret_values_are_sent(tanuki_file: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("JANUS_SECRET_DISCORD_TOKEN", "env-value")
+    fake = Fake(on_main=("apps/golem.yaml",))
+    assert call(fake, "submit", str(tanuki_file)) == 0
+    [_, (_, _, _, body)] = fake.calls
+    assert body is not None and body["secrets"] == {"discord-token": "env-value"}
+
+
+def test_main_is_only_asked_when_a_file_names_secrets(request_file: Path):
+    fake = Fake()
+    assert call(fake, "submit", str(request_file)) == 0
+    assert [url for _, url, _, _ in fake.calls] == [f"{URL}/requests"]
