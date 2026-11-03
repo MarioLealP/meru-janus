@@ -6,6 +6,8 @@
 A new app's request may name secrets (`spec.secrets: [{name, generate}]`, D99): for each one not generated, submit
 takes the value from JANUS_SECRET_<NAME> (discord-token -> JANUS_SECRET_DISCORD_TOKEN) or asks for it (nothing shows
 while typing). Janus writes the values to OpenBao before the PR opens; they never go in the file, the PR or a log.
+A file already on main (a change, or a restore of a retired app, D106) keeps the values its app has - submit
+sends none and asks for none.
 
 It signs in as an Authentik service account (agent-claude by default): the account's app password - from KeePassXC
 through the Secret Service, or JANUS_CLIENT_PASSWORD where there's no desktop - is exchanged for a Bearer JWT for
@@ -27,7 +29,7 @@ import httpx2
 from pydantic import SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from janus.models import Incoming, Pending, Rejected, Submission, Submitted
+from janus.models import Incoming, OnMain, Pending, Rejected, Submission, Submitted
 from janus.request_secrets import requested
 
 # What the token must carry for Authentik's proxy outpost to know who it is: without ak_proxy (and the profile claims
@@ -144,6 +146,13 @@ class Janus:
             raise Failed(f"Janus: {response.status_code} {response.text[:200]}")
         return [Pending.model_validate(item) for item in response.json()]
 
+    def on_main(self) -> set[str]:
+        """The request files on Meru/requests main, by path."""
+        response = self._call("GET", "/apps")
+        if response.status_code != 200:
+            raise Failed(f"Janus: {response.status_code} {response.text[:200]}")
+        return {OnMain.model_validate(item).path for item in response.json()}
+
     def submit(self, item: Submission, values: Mapping[str, SecretStr] | None = None) -> Submitted | Rejected:
         body = item.model_dump()
         if values:
@@ -186,7 +195,10 @@ def run(argv: Sequence[str], http: httpx2.Client, s: ClientSettings) -> int:
         return 0
 
     items = [submission(f) for f in args.files]  # every file checked before anything is sent
-    values = [secret_values(item) for item in items]  # and every value asked for
+    # and every value asked for - only for new files: one already on main keeps its app's values (a restore, D106)
+    asking = [item for item in items if any(not secret.generate for secret in requested(item.path, item.content))]
+    known = janus.on_main() if asking else set()
+    values = [{} if item.path in known else secret_values(item) for item in items]
     status = 0
     for item, given in zip(items, values, strict=True):
         answer = janus.submit(item, given)

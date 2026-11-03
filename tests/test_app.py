@@ -177,3 +177,23 @@ def test_values_for_a_request_without_secrets_are_refused(monkeypatch: pytest.Mo
         body = {**GOOD, "secrets": {"x": "y"}}
         r = c.post("/api/janus/requests", json=body, headers=ID)
     assert r.status_code == 422 and order == []
+
+
+@pytest.mark.parametrize(
+    ("on_main", "status", "why"),
+    [
+        (True, 201, None),  # a restore (D106): the app keeps the values it has in OpenBao
+        (False, 422, "no value for discord-token"),  # a new app has nothing to keep
+    ],
+)
+def test_no_values_keep_an_existing_apps_secrets_and_refuse_a_new_one(
+    monkeypatch: pytest.MonkeyPatch, on_main: bool, status: int, why: str | None
+):
+    order = secrets_flow(monkeypatch, on_main=on_main)
+    with client() as c:
+        r = c.post("/api/janus/requests", json={"path": "apps/tanuki.yaml", "content": TANUKI}, headers=ID)
+    assert r.status_code == status
+    if why:
+        assert why in r.json()["problems"][0] and order == []
+    else:
+        assert order == ["pr apps/tanuki.yaml"]  # nothing written to OpenBao
