@@ -9,10 +9,14 @@ RequestPath = Annotated[str, StringConstraints(pattern=r"^(apps|databases)/[a-z0
 
 
 class Value(BaseModel):
+    """Our own value objects: frozen, and an unknown field is an error."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class Incoming(BaseModel):
+    """What another service answers: frozen, and fields we don't use are dropped."""
+
     model_config = ConfigDict(extra="ignore", frozen=True)
 
 
@@ -24,14 +28,17 @@ class Submission(Value):
 
 
 class Submit(Value):
-    """What the submit endpoint takes: the request file, plus the values of the secrets it names that aren't generated
-    (D99). The values go to OpenBao only - never to Shikigami, the PR or a log."""
+    """What the submit endpoint takes: the request file, plus the values of its secrets that aren't generated (D99).
+
+    The values go to OpenBao only - never to Shikigami, the PR or a log.
+    """
 
     path: RequestPath
     content: Annotated[str, StringConstraints(max_length=65536)]
     secrets: dict[Annotated[str, StringConstraints(max_length=30)], SecretStr] = Field(default_factory=dict)
 
     def submission(self) -> Submission:
+        """The request file alone, without the secret values."""
         return Submission(path=self.path, content=self.content)
 
 
@@ -52,6 +59,8 @@ class Submitted(Value):
 
 
 class Rejected(Value):
+    """A proposal Shikigami or OpenBao turned down: no PR was opened."""
+
     problems: list[str]
     checked_against: str
 

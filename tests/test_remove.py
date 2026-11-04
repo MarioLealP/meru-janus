@@ -1,6 +1,6 @@
 import pytest
 
-from janus.remove import Unremovable, is_removed, mark_removed
+from janus.remove import UnremovableError, is_removed, mark_removed
 
 KITSUNE = """# a comment stays
 apiVersion: meru.clockmost.com/v1
@@ -19,7 +19,8 @@ spec:
 def test_removed_goes_last_in_spec_and_nothing_else_moves():
     marked = mark_removed(KITSUNE)
     assert marked == KITSUNE + "  removed: true\n"
-    assert is_removed(marked) and not is_removed(KITSUNE)
+    assert is_removed(marked)
+    assert not is_removed(KITSUNE)
 
 
 def test_spec_in_the_middle_and_blank_lines_inside():
@@ -42,5 +43,5 @@ def test_a_nested_removed_is_not_the_one():
 
 @pytest.mark.parametrize("text", ["kind: App\n", "spec: {owner: mario}\n", "spec:\nkind: App\n"])
 def test_layouts_it_cant_edit_safely_are_refused(text: str):
-    with pytest.raises(Unremovable):
+    with pytest.raises(UnremovableError):
         mark_removed(text)

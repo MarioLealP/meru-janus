@@ -1,5 +1,7 @@
-"""Reading Meru/requests: the open PRs (the pending requests, D93) and what's on main. Read-only; the bot's token,
-the repo is private."""
+"""Reading Meru/requests: the open PRs (the pending requests, D93) and what's on main.
+
+Read-only; the bot's token, the repo is private.
+"""
 
 import re
 
@@ -45,8 +47,10 @@ _FILES = TypeAdapter(list[_File])
 
 
 async def pending(http: httpx2.AsyncClient, gitea_url: str, org: str, repo: str, token: str, bot: str) -> list[Pending]:
-    """Open PRs, oldest first as Gitea lists them. requested_by only on the bot's own PRs: anyone can write a
-    Requested-By line in a PR they open themselves."""
+    """Open PRs, oldest first as Gitea lists them.
+
+    requested_by only on the bot's own PRs: anyone can write a Requested-By line in a PR they open themselves.
+    """
     headers = {"Authorization": f"token {token}"}
     api = f"{gitea_url}/api/v1/repos/{org}/{repo}"
     response = await http.get(f"{api}/pulls", params={"state": "open", "limit": 50}, headers=headers)
@@ -70,18 +74,19 @@ async def pending(http: httpx2.AsyncClient, gitea_url: str, org: str, repo: str,
     return out
 
 
-class NotOnMain(LookupError):
-    pass
+class NotOnMainError(LookupError):
+    """The path isn't on Meru/requests main."""
 
 
 async def read_main(http: httpx2.AsyncClient, gitea_url: str, org: str, repo: str, token: str, path: str) -> str:
+    """A request file's text on main; NotOnMainError when Gitea has no such file."""
     response = await http.get(
         f"{gitea_url}/api/v1/repos/{org}/{repo}/raw/{path}",
         params={"ref": "main"},
         headers={"Authorization": f"token {token}"},
     )
     if response.status_code == 404:
-        raise NotOnMain(path)
+        raise NotOnMainError(path)
     response.raise_for_status()
     return response.text
 

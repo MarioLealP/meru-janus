@@ -1,6 +1,8 @@
-"""The atlas's Approve / Deny (D98): Janus starts the silent check at Authentik and hands the answer to Xolotl. It
-holds no secret and decides nothing - the one-time code is only worth something to Xolotl, which redeems and checks
-it. What Janus guards is that the click was Mario's, on the atlas page:
+"""The atlas's Approve / Deny (D98).
+
+Janus starts the silent check at Authentik and hands the answer to Xolotl. It holds no secret and decides nothing - the
+one-time code is only worth something to Xolotl, which redeems and checks it. What Janus guards is that the click was
+Mario's, on the atlas page:
 
 - start is a POST from the atlas itself (Sec-Fetch-Site / Origin); a cross-site POST also lacks the Lax session
   cookie, so forward-auth stops it before Janus
@@ -19,11 +21,12 @@ from typing import Annotated, Literal
 from urllib.parse import quote, urlencode
 
 import httpx2
-from pydantic import Field, StringConstraints, ValidationError
+from pydantic import Field, StringConstraints, TypeAdapter, ValidationError
 
 from janus.models import Incoming, Value
 
 Decision = Literal["approve", "deny"]
+DECISION = TypeAdapter(Decision)
 Head = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
 COOKIE = "janus_approval"
 COOKIE_PATH = "/api/janus/approve"
@@ -52,6 +55,7 @@ XOLOTL_RESULTS = {403: Result.REFUSED, 409: Result.CHANGED, 422: Result.PROBLEMS
 
 
 def result_of(status: int) -> Result:
+    """The result code for Xolotl's HTTP status; anything it doesn't name means Xolotl is down."""
     return XOLOTL_RESULTS.get(status, Result.DOWN)
 
 
@@ -87,12 +91,20 @@ class Outcome(Incoming):
     commit: str | None
 
 
-class NotApproved(Exception):
+class NotApprovedError(Exception):
     """Xolotl said no (or couldn't be asked): its status and reason, shown to Mario."""
 
     def __init__(self, status: int, reason: str) -> None:
         super().__init__(reason)
         self.status, self.reason = status, reason
+
+
+class BackToAtlasError(Exception):
+    """A click ends here: the browser goes back to the atlas's Requests view with this result."""
+
+    def __init__(self, result: Result, pr: int | None = None, decision: str | None = None) -> None:
+        super().__init__(result.value)
+        self.result, self.pr, self.decision = result, pr, decision
 
 
 def nonce(org: str, repo: str, pr: int, head: str, decision: Decision) -> str:
@@ -101,10 +113,12 @@ def nonce(org: str, repo: str, pr: int, head: str, decision: Decision) -> str:
 
 
 def new_click(pr: int, head: str, decision: Decision, removing: bool = False) -> Click:
+    """A click with a fresh random state."""
     return Click(state=secrets.token_urlsafe(32), pr=pr, head=head, decision=decision, removing=removing)
 
 
 def authorize_url(authorize: str, client_id: str, redirect_uri: str, click: Click, org: str, repo: str) -> str:
+    """Authentik's authorize URL for this click: no screen, and the nonce Xolotl will check."""
     query = {
         "response_type": "code",
         "client_id": client_id,
@@ -118,6 +132,7 @@ def authorize_url(authorize: str, client_id: str, redirect_uri: str, click: Clic
 
 
 def read_cookie(value: str | None) -> Click | None:
+    """The click kept in the cookie, or None when there's no cookie or it doesn't parse."""
     if not value:
         return None
     try:
@@ -127,6 +142,7 @@ def read_cookie(value: str | None) -> Click | None:
 
 
 def same_click(click: Click | None, state: str | None) -> bool:
+    """Whether the state Authentik sent back is the one this browser's cookie holds."""
     return click is not None and state is not None and secrets.compare_digest(click.state, state)
 
 
@@ -138,15 +154,16 @@ def from_the_atlas(sec_fetch_site: str | None, origin: str | None, atlas_origin:
 
 
 async def hand_to_xolotl(http: httpx2.AsyncClient, url: str, click: Click, code: str) -> Outcome:
+    """Give Xolotl the one-time code and what was clicked; NotApprovedError unless it answers 200."""
     body = {"pr": click.pr, "head": click.head, "decision": click.decision, "code": code}
     try:
         response = await http.post(url, json=body)
     except httpx2.HTTPError as e:
-        raise NotApproved(502, f"Xolotl can't be reached: {type(e).__name__}") from e
+        raise NotApprovedError(502, f"Xolotl can't be reached: {type(e).__name__}") from e
     if response.status_code != 200:
         try:
             reason = str(response.json().get("detail", response.text))
         except ValueError:
             reason = response.text[:300]
-        raise NotApproved(response.status_code, reason)
+        raise NotApprovedError(response.status_code, reason)
     return Outcome.model_validate_json(response.content)

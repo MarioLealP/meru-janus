@@ -2,13 +2,15 @@
 
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Everything Janus reads from the environment."""
+
     # extra="ignore": Kubernetes adds JANUS_PORT, JANUS_SERVICE_HOST, ... for the Service named janus.
-    model_config = SettingsConfigDict(env_prefix="JANUS_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="JANUS_", extra="ignore", frozen=True)
 
     gitea_url: str = "https://git.clockmost.com"
     org: str = "Meru"
@@ -41,3 +43,4 @@ class Settings(BaseSettings):
     work_dir: Path = Path("/tmp")  # the root filesystem is read-only; each proposal clones into its own folder here
     http_timeout: float = 20.0
     git_timeout: float = 60.0
+    git_path: str = Field(default="/usr/bin:/bin", validation_alias="PATH")  # the pod's own PATH, for git
