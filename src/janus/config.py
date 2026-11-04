@@ -1,5 +1,6 @@
 """Janus's settings, from JANUS_* environment variables (Nüwa's env + secretEnv)."""
 
+import tempfile
 from pathlib import Path
 
 from pydantic import Field, SecretStr
@@ -40,7 +41,8 @@ class Settings(BaseSettings):
     openbao_role: str = "meru-janus-secrets"
     openbao_dir: Path = Path("/var/run/meru/openbao")  # token, ca.crt (nuwa-app openbaoLogin)
 
-    work_dir: Path = Path("/tmp")  # the root filesystem is read-only; each proposal clones into its own folder here
+    # The root filesystem is read-only; each proposal clones into its own folder here.
+    work_dir: Path = Path(tempfile.gettempdir())
     http_timeout: float = 20.0
     git_timeout: float = 60.0
     git_path: str = Field(default="/usr/bin:/bin", validation_alias="PATH")  # the pod's own PATH, for git

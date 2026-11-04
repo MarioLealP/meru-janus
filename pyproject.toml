@@ -35,14 +35,23 @@ line-length = 120
 
 [tool.ruff.lint]
 preview = true
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "Q", "C4", "FAST", "N", "PT", "ERA", "D", "complex-structure"]
-ignore = ["undocumented-public-init"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "Q", "C4", "FAST", "N", "PT", "ERA", "D", "complex-structure", "S"]
+ignore = [
+    "undocumented-public-init",
+    # From S, the rules that guess from a name or an import: on Meru's code they only raised false alarms.
+    "assert",
+    "hardcoded-bind-all-interfaces",
+    "hardcoded-password-string",
+    "start-process-with-partial-path",
+    "subprocess-without-shell-equals-true",
+    "suspicious-subprocess-import",
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D", "unused-async"]
+"tests/**" = ["D", "S", "unused-async"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
