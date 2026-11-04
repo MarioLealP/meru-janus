@@ -1,4 +1,4 @@
-"""janus - the command line for Meru's front door, for agents and people alike (D94).
+"""The command line for Meru's front door, for agents and people alike (D94).
 
     janus pending                 the requests waiting for approval
     janus submit FILE [FILE ...]  propose request files: .../apps/<name>.yaml or .../databases/<name>.yaml
@@ -23,13 +23,14 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from functools import cached_property
 from pathlib import Path
 
 import httpx2
-from pydantic import SecretStr, ValidationError
+from pydantic import ConfigDict, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from janus.models import Incoming, OnMain, Pending, Rejected, Submission, Submitted
+from janus.models import Incoming, OnMain, Pending, Rejected, Submission, Submitted, Value
 from janus.request_secrets import requested
 
 # What the token must carry for Authentik's proxy outpost to know who it is: without ak_proxy (and the profile claims
@@ -38,7 +39,9 @@ SCOPES = "openid profile email ak_proxy"
 
 
 class ClientSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="JANUS_CLIENT_", extra="ignore")
+    """The command line's settings, from JANUS_CLIENT_* environment variables."""
+
+    model_config = SettingsConfigDict(env_prefix="JANUS_CLIENT_", extra="ignore", frozen=True)
 
     url: str = "https://atlas.clockmost.com/api/janus"
     token_url: str = "https://auth.clockmost.com/application/o/token/"
@@ -51,15 +54,18 @@ class ClientSettings(BaseSettings):
 
 
 class Token(Incoming):
+    """Authentik's answer to the sign-in."""
+
     access_token: SecretStr
     expires_in: int
 
 
-class Failed(Exception):
+class CliError(Exception):
     """Something the person running the command should read; main() prints it and exits 1."""
 
 
 def password(s: ClientSettings) -> SecretStr:
+    """The app password: JANUS_CLIENT_PASSWORD, else the Secret Service entry."""
     if s.password is not None:
         return s.password
     try:
@@ -67,9 +73,9 @@ def password(s: ClientSettings) -> SecretStr:
             ["secret-tool", "lookup", "Title", s.secret_title], capture_output=True, text=True, timeout=30
         )
     except FileNotFoundError as e:
-        raise Failed("no secret-tool here: set JANUS_CLIENT_PASSWORD instead") from e
+        raise CliError("no secret-tool here: set JANUS_CLIENT_PASSWORD instead") from e
     if found.returncode != 0 or not found.stdout:
-        raise Failed(f"no {s.secret_title!r} in the Secret Service - is KeePassXC unlocked?")
+        raise CliError(f"no {s.secret_title!r} in the Secret Service - is KeePassXC unlocked?")
     return SecretStr(found.stdout.rstrip("\n"))
 
 
@@ -84,7 +90,7 @@ def sign_in(http: httpx2.Client, s: ClientSettings) -> SecretStr:
     }
     response = http.post(s.token_url, data=form)
     if response.status_code != 200:
-        raise Failed(f"Authentik refused the sign-in as {s.username}: {response.status_code} {response.text[:200]}")
+        raise CliError(f"Authentik refused the sign-in as {s.username}: {response.status_code} {response.text[:200]}")
     return Token.model_validate_json(response.content).access_token
 
 
@@ -93,14 +99,15 @@ def submission(file: Path) -> Submission:
     try:
         content = file.read_text()
     except OSError as e:
-        raise Failed(f"{file}: {e.strerror}") from e
+        raise CliError(f"{file}: {e.strerror}") from e
     try:
         return Submission(path=f"{file.parent.name}/{file.name}", content=content)
     except ValidationError as e:
-        raise Failed(f"{file}: not a request file (apps/<name>.yaml or databases/<name>.yaml, at most 64 KiB)") from e
+        raise CliError(f"{file}: not a request file (apps/<name>.yaml or databases/<name>.yaml, at most 64 KiB)") from e
 
 
 def env_name(secret: str) -> str:
+    """The environment variable a secret's value comes from: discord-token -> JANUS_SECRET_DISCORD_TOKEN."""
     return "JANUS_SECRET_" + secret.upper().replace("-", "_")
 
 
@@ -110,7 +117,11 @@ def secret_values(
     environ: Mapping[str, str] = os.environ,
     interactive: Callable[[], bool] = sys.stdin.isatty,
 ) -> dict[str, SecretStr]:
-    """The values of the secrets the request names and doesn't generate: from the environment, else asked for."""
+    """The values of the secrets the request names and doesn't generate: from the environment, else asked for.
+
+    `environ` is read directly, not through settings: the variable names come from the request file, so no settings
+    class can declare them.
+    """
     values = {}
     for secret in requested(item.path, item.content):
         if secret.generate:
@@ -118,42 +129,50 @@ def secret_values(
         value = environ.get(env_name(secret.name))
         if value is None:
             if not interactive():
-                raise Failed(f"{item.path}: no value for {secret.name} - set {env_name(secret.name)}")
+                raise CliError(f"{item.path}: no value for {secret.name} - set {env_name(secret.name)}")
             value = ask(f"{item.path} {secret.name} (hidden): ")
         if not value:
-            raise Failed(f"{item.path}: empty value for {secret.name}")
+            raise CliError(f"{item.path}: empty value for {secret.name}")
         values[secret.name] = SecretStr(value)
     return values
 
 
-class Janus:
-    def __init__(self, http: httpx2.Client, s: ClientSettings) -> None:
-        self._http, self._s = http, s
-        self._token: SecretStr | None = None
+class Janus(Value):
+    """Janus's API as the signed-in service account; signs in at the first call."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    http: httpx2.Client
+    settings: ClientSettings
+
+    @cached_property
+    def token(self) -> SecretStr:
+        """The Bearer JWT, from one sign-in at the first call: nothing is signed in for a file that fails its check."""
+        return sign_in(self.http, self.settings)
 
     def _call(self, method: str, path: str, body: dict | None = None) -> httpx2.Response:
-        if self._token is None:
-            self._token = sign_in(self._http, self._s)
-        headers = {"Authorization": f"Bearer {self._token.get_secret_value()}"}
-        response = self._http.request(method, f"{self._s.url}{path}", headers=headers, json=body)
+        headers = {"Authorization": f"Bearer {self.token.get_secret_value()}"}
+        response = self.http.request(method, f"{self.settings.url}{path}", headers=headers, json=body)
         if response.status_code in (302, 401, 403):
-            raise Failed(f"the atlas didn't let {self._s.username} in ({response.status_code})")
+            raise CliError(f"the atlas didn't let {self.settings.username} in ({response.status_code})")
         return response
 
     def pending(self) -> list[Pending]:
+        """The requests waiting for approval."""
         response = self._call("GET", "/requests")
         if response.status_code != 200:
-            raise Failed(f"Janus: {response.status_code} {response.text[:200]}")
+            raise CliError(f"Janus: {response.status_code} {response.text[:200]}")
         return [Pending.model_validate(item) for item in response.json()]
 
     def on_main(self) -> set[str]:
         """The request files on Meru/requests main, by path."""
         response = self._call("GET", "/apps")
         if response.status_code != 200:
-            raise Failed(f"Janus: {response.status_code} {response.text[:200]}")
+            raise CliError(f"Janus: {response.status_code} {response.text[:200]}")
         return {OnMain.model_validate(item).path for item in response.json()}
 
     def submit(self, item: Submission, values: Mapping[str, SecretStr] | None = None) -> Submitted | Rejected:
+        """Propose one request file with its secret values; a Rejected is Shikigami's verdict, not an error."""
         body = item.model_dump()
         if values:
             body["secrets"] = {name: value.get_secret_value() for name, value in values.items()}
@@ -165,10 +184,11 @@ class Janus:
                 return Rejected.model_validate_json(response.content)
             except ValidationError:
                 pass  # FastAPI's own 422: the body didn't fit Submission - shouldn't happen, it was checked here
-        raise Failed(f"Janus: {response.status_code} {response.text[:200]}")
+        raise CliError(f"Janus: {response.status_code} {response.text[:200]}")
 
 
 def show_pending(items: list[Pending]) -> None:
+    """Print the pending requests for a person, one line each."""
     if not items:
         print("nothing waiting for approval")
     for p in items:
@@ -176,6 +196,7 @@ def show_pending(items: list[Pending]) -> None:
 
 
 def run(argv: Sequence[str], http: httpx2.Client, s: ClientSettings) -> int:
+    """Parse the arguments and run the command; returns the exit status."""
     parser = argparse.ArgumentParser(prog="janus", description="Meru's front door: request apps and databases.")
     parser.add_argument("--json", action="store_true", help="print the answers as JSON lines (for scripts)")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -184,7 +205,7 @@ def run(argv: Sequence[str], http: httpx2.Client, s: ClientSettings) -> int:
     submit.add_argument("files", nargs="+", type=Path)
     args = parser.parse_args(argv)
 
-    janus = Janus(http, s)
+    janus = Janus(http=http, settings=s)
     if args.command == "pending":
         items = janus.pending()
         if args.json:
@@ -216,11 +237,12 @@ def run(argv: Sequence[str], http: httpx2.Client, s: ClientSettings) -> int:
 
 
 def main() -> None:
+    """The `janus` command: exits 1 with a readable line on any expected failure."""
     s = ClientSettings()
     try:
         with httpx2.Client(timeout=s.timeout) as http:
             sys.exit(run(sys.argv[1:], http, s))
-    except Failed as e:
+    except CliError as e:
         print(f"janus: {e}", file=sys.stderr)
         sys.exit(1)
     except httpx2.HTTPError as e:

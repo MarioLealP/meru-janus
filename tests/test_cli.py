@@ -4,9 +4,9 @@ from urllib.parse import parse_qs
 
 import httpx2
 import pytest
-from pydantic import SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from janus.cli import ClientSettings, Failed, run, secret_values
+from janus.cli import ClientSettings, CliError, run, secret_values
 from janus.models import Submission
 
 TOKEN_URL = "https://auth.test/application/o/token/"
@@ -14,13 +14,16 @@ URL = "https://atlas.test/api/janus"
 APP = "apiVersion: meru.clockmost.com/v1\nkind: App\nmetadata:\n  name: golem\n"
 
 
-class Fake:
+class Fake(BaseModel):
     """Authentik's token endpoint and Janus behind Caddy."""
 
-    def __init__(self, reject: bool = False, refuse_sign_in: bool = False, on_main: tuple[str, ...] = ()) -> None:
-        self.reject, self.refuse_sign_in, self.on_main = reject, refuse_sign_in, on_main
-        self.sign_ins: list[dict[str, list[str]]] = []
-        self.calls: list[tuple[str, str, str | None, dict | None]] = []
+    model_config = ConfigDict(frozen=True)
+
+    reject: bool = False
+    refuse_sign_in: bool = False
+    on_main: tuple[str, ...] = ()
+    sign_ins: list[dict[str, list[str]]] = Field(default_factory=list)
+    calls: list[tuple[str, str, str | None, dict | None]] = Field(default_factory=list)
 
     def handler(self, request: httpx2.Request) -> httpx2.Response:
         url = str(request.url)
@@ -54,8 +57,8 @@ class Fake:
         return httpx2.Response(201, json=answer | {"checked_against": "c1"})
 
 
-def settings(**kw: object) -> ClientSettings:
-    return ClientSettings(url=URL, token_url=TOKEN_URL, client_id="cid", password=SecretStr("app-pw"), **kw)  # ty: ignore[invalid-argument-type]
+def settings() -> ClientSettings:
+    return ClientSettings(url=URL, token_url=TOKEN_URL, client_id="cid", password=SecretStr("app-pw"))
 
 
 def call(fake: Fake, *argv: str) -> int:
@@ -75,8 +78,10 @@ def test_it_signs_in_once_with_the_proxy_scopes_and_sends_the_token(capsys: pyte
     fake = Fake()
     assert call(fake, "pending") == 0
     [form] = fake.sign_ins
-    assert form["grant_type"] == ["client_credentials"] and form["username"] == ["agent-claude"]
-    assert form["password"] == ["app-pw"] and form["client_id"] == ["cid"]
+    assert form["grant_type"] == ["client_credentials"]
+    assert form["username"] == ["agent-claude"]
+    assert form["password"] == ["app-pw"]
+    assert form["client_id"] == ["cid"]
     assert "ak_proxy" in form["scope"][0].split()  # without it the outpost doesn't know who it is (403)
     [(method, url, auth, _)] = fake.calls
     assert (method, url, auth) == ("GET", f"{URL}/requests", "Bearer jwt")
@@ -87,14 +92,16 @@ def test_submit_sends_the_file_under_its_request_path(request_file: Path, capsys
     fake = Fake()
     assert call(fake, "submit", str(request_file)) == 0
     [(method, _, _, body)] = fake.calls
-    assert method == "POST" and body == {"path": "apps/golem.yaml", "content": APP}
+    assert method == "POST"
+    assert body == {"path": "apps/golem.yaml", "content": APP}
     assert "https://git.test/pulls/4 - waiting for approval" in capsys.readouterr().out
 
 
 def test_a_rejected_file_prints_shikigamis_problems_and_fails(request_file: Path, capsys: pytest.CaptureFixture[str]):
     assert call(Fake(reject=True), "submit", str(request_file)) == 1
     out = capsys.readouterr().out
-    assert "rejected" in out and "- apps/golem.yaml: owner missing" in out
+    assert "rejected" in out
+    assert "- apps/golem.yaml: owner missing" in out
 
 
 def test_json_output_is_one_model_per_line(request_file: Path, capsys: pytest.CaptureFixture[str]):
@@ -107,13 +114,14 @@ def test_a_file_outside_apps_or_databases_is_refused_before_signing_in(tmp_path:
     stray.parent.mkdir()
     stray.write_text("x: 1\n")
     fake = Fake()
-    with pytest.raises(Failed, match="not a request file"):
+    with pytest.raises(CliError, match="not a request file"):
         call(fake, "submit", str(stray))
-    assert fake.sign_ins == [] and fake.calls == []
+    assert fake.sign_ins == []
+    assert fake.calls == []
 
 
 def test_a_refused_sign_in_says_so():
-    with pytest.raises(Failed, match="Authentik refused the sign-in as agent-claude: 400"):
+    with pytest.raises(CliError, match="Authentik refused the sign-in as agent-claude: 400"):
         call(Fake(refuse_sign_in=True), "pending")
 
 
@@ -139,7 +147,7 @@ def test_values_come_from_the_environment_first_then_a_hidden_prompt():
 
 
 def test_without_a_terminal_a_missing_value_fails_before_anything_is_sent():
-    with pytest.raises(Failed, match="JANUS_SECRET_DISCORD_TOKEN"):
+    with pytest.raises(CliError, match="JANUS_SECRET_DISCORD_TOKEN"):
         secret_values(ITEM, environ={}, interactive=lambda: False)
 
 
@@ -165,7 +173,8 @@ def test_a_new_files_secret_values_are_sent(tanuki_file: Path, monkeypatch: pyte
     fake = Fake(on_main=("apps/golem.yaml",))
     assert call(fake, "submit", str(tanuki_file)) == 0
     [_, (_, _, _, body)] = fake.calls
-    assert body is not None and body["secrets"] == {"discord-token": "env-value"}
+    assert body is not None
+    assert body["secrets"] == {"discord-token": "env-value"}
 
 
 def test_main_is_only_asked_when_a_file_names_secrets(request_file: Path):

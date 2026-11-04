@@ -38,7 +38,8 @@ async def test_on_main_lists_apps_and_databases_with_their_removed_state():
     }
 
     def handler(request: httpx2.Request) -> httpx2.Response:
-        assert request.headers["authorization"] == "token tok" and request.url.params["ref"] == "main"
+        assert request.headers["authorization"] == "token tok"
+        assert request.url.params["ref"] == "main"
         tail = request.url.path.removeprefix("/api/v1/repos/Meru/requests")
         if tail == "/contents/apps":
             listing = [{"name": "kitsune.yaml", "path": "apps/kitsune.yaml", "type": "file"},

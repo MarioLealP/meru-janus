@@ -1,26 +1,31 @@
-"""Opening a request PR on Meru/requests as Janus's bot (D93): AGit - a push to refs/for/main, which Gitea turns into
-a PR. Read on the repo is enough for that; the bot can't push main or merge (only Xolotl writes main, D82).
+"""Opening a request PR on Meru/requests as Janus's bot (D93).
+
+AGit: a push to refs/for/main, which Gitea turns into a PR. Read on the repo is enough for that; the bot can't push main
+or merge (only Xolotl writes main, D82).
 
 The token reaches git through GIT_CONFIG_* environment variables (an http.extraHeader), never the command line or a
-file - nothing in /proc/<pid>/cmdline, nothing left in the clone."""
+file - nothing in /proc/<pid>/cmdline, nothing left in the clone.
+"""
 
 import asyncio
-import os
 import re
 import tempfile
 from pathlib import Path
 
-from janus.models import Submission
+from pydantic import ConfigDict, Field, SecretStr
+
+from janus.models import Submission, Value
 from janus.remove import is_removed
 
 PR_URL = re.compile(r"(https?://\S+/pulls/(\d+))")
 
 
 class ProposeError(RuntimeError):
-    pass
+    """Git couldn't make the PR: it failed or timed out."""
 
 
 def title_for(submission: Submission, exists: bool) -> str:
+    """The PR title: add, change or remove, by whether the file is on main and what it says."""
     kind, file = submission.path.split("/")
     name = file.removesuffix(".yaml")
     what = "database" if kind == "databases" else "app"
@@ -34,26 +39,37 @@ def topic_for(submission: Submission) -> str:
     return f"request-{kind}-{file.removesuffix('.yaml')}"
 
 
-class Proposer:
-    def __init__(self, repo_url: str, user: str, token: str, work_dir: Path, timeout: float) -> None:
-        self._repo_url, self._user, self._timeout, self._work_dir = repo_url, user, timeout, work_dir
-        self._env = {
-            "HOME": str(work_dir),  # git wants a home; the root filesystem is read-only
+class Proposer(Value):
+    """Pushes proposals to the requests repo as the bot, one at a time."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    repo_url: str
+    user: str
+    token: SecretStr
+    work_dir: Path
+    timeout: float
+    git_path: str
+    # One proposal at a time: they're rare, and the clone folder stays simple.
+    lock: asyncio.Lock = Field(default_factory=asyncio.Lock, repr=False, exclude=True)
+
+    def _env(self) -> dict[str, str]:
+        return {
+            "HOME": str(self.work_dir),  # git wants a home; the root filesystem is read-only
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "http.extraHeader",
-            "GIT_CONFIG_VALUE_0": f"Authorization: token {token}",
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "GIT_CONFIG_VALUE_0": f"Authorization: token {self.token.get_secret_value()}",
+            "PATH": self.git_path,
         }
-        self._lock = asyncio.Lock()  # one proposal at a time: they're rare, and the clone folder stays simple
 
     async def _git(self, cwd: Path, *args: str) -> str:
         process = await asyncio.create_subprocess_exec(
-            "git", *args, cwd=cwd, env=self._env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+            "git", *args, cwd=cwd, env=self._env(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
         )
         try:
-            output, _ = await asyncio.wait_for(process.communicate(), self._timeout)
+            output, _ = await asyncio.wait_for(process.communicate(), self.timeout)
         except TimeoutError:
             process.kill()
             raise ProposeError(f"git {args[0]} timed out") from None
@@ -64,11 +80,11 @@ class Proposer:
 
     async def propose(self, submission: Submission, requested_by: str, checked_against: str) -> tuple[str, str, str]:
         """Push the file as a PR. Returns (title, git's push output - it names the PR, the PR's head commit)."""
-        async with self._lock:
-            with tempfile.TemporaryDirectory(dir=self._work_dir) as tmp:
+        async with self.lock:
+            with tempfile.TemporaryDirectory(dir=self.work_dir) as tmp:
                 clone = Path(tmp)
                 await self._git(clone, "init", "--quiet", "--initial-branch=work")
-                await self._git(clone, "fetch", "--quiet", "--depth=1", self._repo_url, "main")
+                await self._git(clone, "fetch", "--quiet", "--depth=1", self.repo_url, "main")
                 await self._git(clone, "checkout", "--quiet", "FETCH_HEAD")
                 target = clone / submission.path
                 exists = target.exists()
@@ -84,19 +100,20 @@ class Proposer:
                     f"requests main {checked_against[:12]}.\n\n"
                     f"Requested-By: {requested_by}\nChecked-Against: {checked_against}\n"
                 )
-                author = f"{self._user} <{self._user}@clockmost.com>"
+                author = f"{self.user} <{self.user}@clockmost.com>"
                 await self._git(
-                    clone, "-c", f"user.name={self._user}", "-c", f"user.email={self._user}@clockmost.com",
+                    clone, "-c", f"user.name={self.user}", "-c", f"user.email={self.user}@clockmost.com",
                     "commit", "--quiet", f"--author={author}", "-m", message,
                 )  # fmt: skip
                 head = (await self._git(clone, "rev-parse", "HEAD")).strip()
                 output = await self._git(
-                    clone, "push", "--porcelain", self._repo_url, "HEAD:refs/for/main",
+                    clone, "push", "--porcelain", self.repo_url, "HEAD:refs/for/main",
                     "-o", f"topic={topic_for(submission)}", "-o", f"title={title}",
                 )  # fmt: skip
                 return title, output, head
 
 
 def pr_from(output: str) -> tuple[int | None, str | None]:
+    """The PR number and URL from git's push output, or None for both when it names none."""
     match = PR_URL.search(output)
     return (int(match.group(2)), match.group(1)) if match else (None, None)
