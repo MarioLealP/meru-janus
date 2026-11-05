@@ -6,8 +6,8 @@
 A new app's request may name secrets (`spec.secrets: [{name, generate}]`, D99): for each one not generated, submit
 takes the value from JANUS_SECRET_<NAME> (discord-token -> JANUS_SECRET_DISCORD_TOKEN) or asks for it (nothing shows
 while typing). Janus writes the values to OpenBao before the PR opens; they never go in the file, the PR or a log.
-A file already on main (a change, or a restore of a retired app, D106) keeps the values its app has - submit
-sends none and asks for none.
+A file already on main keeps the values its app has (a restore of a retired app, D106), except the names a change
+marks `entry: new` (D123): submit asks for those, Janus writes them to a fresh entry and puts its name in the file.
 
 It signs in as an Authentik service account (agent-claude by default): the account's app password - from KeePassXC
 through the Secret Service, or JANUS_CLIENT_PASSWORD where there's no desktop - is exchanged for a Bearer JWT for
@@ -31,7 +31,7 @@ from pydantic import ConfigDict, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from janus.models import Incoming, OnMain, Pending, Rejected, Submission, Submitted, Value
-from janus.request_secrets import requested
+from janus.request_secrets import NEW, requested
 
 # What the token must carry for Authentik's proxy outpost to know who it is: without ak_proxy (and the profile claims
 # it fills the X-Authentik-* headers from) the token is valid but the outpost answers 403.
@@ -116,15 +116,17 @@ def secret_values(
     ask: Callable[[str], str] = getpass.getpass,
     environ: Mapping[str, str] = os.environ,
     interactive: Callable[[], bool] = sys.stdin.isatty,
+    only_new: bool = False,
 ) -> dict[str, SecretStr]:
     """The values of the secrets the request names and doesn't generate: from the environment, else asked for.
 
+    `only_new` for an app already on main: just the names a change marks `entry: new` (D123) - the rest keep theirs.
     `environ` is read directly, not through settings: the variable names come from the request file, so no settings
     class can declare them.
     """
     values = {}
     for secret in requested(item.path, item.content):
-        if secret.generate:
+        if secret.generate or (only_new and secret.entry != NEW):
             continue
         value = environ.get(env_name(secret.name))
         if value is None:
@@ -216,10 +218,11 @@ def run(argv: Sequence[str], http: httpx2.Client, s: ClientSettings) -> int:
         return 0
 
     items = [submission(f) for f in args.files]  # every file checked before anything is sent
-    # and every value asked for - only for new files: one already on main keeps its app's values (a restore, D106)
+    # and every value asked for: all of a new app's; for one already on main only a change's `entry: new` names (D123) -
+    # without one it keeps its app's values (a restore, D106)
     asking = [item for item in items if any(not secret.generate for secret in requested(item.path, item.content))]
     known = janus.on_main() if asking else set()
-    values = [{} if item.path in known else secret_values(item) for item in items]
+    values = [secret_values(item, only_new=item.path in known) for item in items]
     status = 0
     for item, given in zip(items, values, strict=True):
         answer = janus.submit(item, given)
