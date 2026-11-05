@@ -181,3 +181,23 @@ def test_main_is_only_asked_when_a_file_names_secrets(request_file: Path):
     fake = Fake()
     assert call(fake, "submit", str(request_file)) == 0
     assert [url for _, url, _, _ in fake.calls] == [f"{URL}/requests"]
+
+
+def test_on_main_only_a_changes_new_names_are_asked_for():
+    from janus.cli import secret_values
+    from janus.models import Submission
+
+    content = (
+        "kind: App\nspec:\n  secrets:\n    - name: discord-token\n    - name: glitchtip-token\n      entry: new\n"
+        "    - name: other-token\n      entry: env-20261105-a1b2c3\n"
+    )
+    item = Submission(path="apps/tanuki.yaml", content=content)
+    asked: list[str] = []
+
+    def ask(prompt: str) -> str:
+        asked.append(prompt)
+        return "typed"
+
+    values = secret_values(item, ask=ask, environ={}, interactive=lambda: True, only_new=True)
+    assert list(values) == ["glitchtip-token"]
+    assert asked == ["apps/tanuki.yaml glitchtip-token (hidden): "]
