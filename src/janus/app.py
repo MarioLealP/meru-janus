@@ -12,6 +12,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import httpx2
+import sentry_sdk
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import PlainTextResponse
 
@@ -22,6 +23,11 @@ from janus.routers import approvals, health, requests
 
 log = logging.getLogger("janus")
 OPEN_PATHS = {"/heartbeat"}  # the probes, from the kubelet - no identity there
+
+
+# Crash reports to GlitchTip (D125): SENTRY_DSN comes from nuwa-app's glitchtip.dsn; unset, the SDK stays off.
+# No local variables or request bodies in a report - either can hold a secret.
+sentry_sdk.init(include_local_variables=False, max_request_body_size="never")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
