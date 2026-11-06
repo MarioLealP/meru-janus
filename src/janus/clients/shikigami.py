@@ -2,7 +2,7 @@
 
 import httpx2
 
-from janus.models import Submission, Verdict
+from janus.models.requests import Submission, Verdict
 
 
 async def validate(http: httpx2.AsyncClient, url: str, submission: Submission) -> Verdict:

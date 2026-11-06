@@ -1,6 +1,6 @@
 import httpx2
 
-from janus.gitea import on_main, pending
+from janus.clients.gitea import on_main, pending
 
 
 def gitea() -> httpx2.AsyncClient:

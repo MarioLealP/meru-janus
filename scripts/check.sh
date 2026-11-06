@@ -16,6 +16,13 @@ if [[ -n $too_long ]]; then
   printf '%s\n' "$too_long"
   exit 1
 fi
+step "layout: only __init__, __main__ and config at the top of src/<app>"
+loose=$(find src -mindepth 2 -maxdepth 2 -name '*.py' ! -name __init__.py ! -name __main__.py ! -name config.py)
+if [[ -n $loose ]]; then
+  printf '%s\n' "$loose"
+  echo "move these into a folder (STANDARDS.md, Layout)"
+  exit 1
+fi
 step "TLS checks stay on"
 # ruff's rule for this only knows requests and httpx by name, not httpx2.
 if grep -rn 'verify=False' src; then

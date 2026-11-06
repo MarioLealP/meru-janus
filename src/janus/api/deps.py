@@ -12,10 +12,10 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
-from janus import approve
-from janus.approve import BackToAtlasError, Result
-from janus.backends import Backends
+from janus.clients.backends import Backends
 from janus.config import Settings
+from janus.core import approve
+from janus.core.approve import BackToAtlasError, Result
 
 
 def get_backends(request: Request) -> Backends:

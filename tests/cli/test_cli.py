@@ -6,8 +6,8 @@ import httpx2
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from janus.cli import ClientSettings, CliError, run, secret_values
-from janus.models import Submission
+from janus.cli.main import ClientSettings, CliError, run, secret_values
+from janus.models.requests import Submission
 
 TOKEN_URL = "https://auth.test/application/o/token/"
 URL = "https://atlas.test/api/janus"
@@ -184,8 +184,8 @@ def test_main_is_only_asked_when_a_file_names_secrets(request_file: Path):
 
 
 def test_on_main_only_a_changes_new_names_are_asked_for():
-    from janus.cli import secret_values
-    from janus.models import Submission
+    from janus.cli.main import secret_values
+    from janus.models.requests import Submission
 
     content = (
         "kind: App\nspec:\n  secrets:\n    - name: discord-token\n    - name: glitchtip-token\n      entry: new\n"

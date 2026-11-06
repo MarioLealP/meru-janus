@@ -6,9 +6,10 @@ import httpx2
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
-from janus import gitea, intake
-from janus.deps import BackendsDep, BotToken, Requester
-from janus.models import OnMain, Pending, Rejected, Submit, Submitted
+from janus.api.deps import BackendsDep, BotToken, Requester
+from janus.clients import gitea
+from janus.core import intake
+from janus.models.requests import OnMain, Pending, Rejected, Submit, Submitted
 
 ERRORS: dict[int | str, dict[str, Any]] = {
     403: {"description": "No SSO identity"},

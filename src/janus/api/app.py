@@ -16,10 +16,10 @@ import sentry_sdk
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import PlainTextResponse
 
-from janus.approve import BackToAtlasError
-from janus.backends import backends_for
+from janus.api import approvals, health, requests
+from janus.clients.backends import backends_for
 from janus.config import Settings
-from janus.routers import approvals, health, requests
+from janus.core.approve import BackToAtlasError
 
 log = logging.getLogger("janus")
 OPEN_PATHS = {"/heartbeat"}  # the probes, from the kubelet - no identity there

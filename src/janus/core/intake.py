@@ -7,11 +7,12 @@ import httpx2
 from fastapi import HTTPException
 from pydantic import SecretStr
 
-from janus import approve, gitea, remove, request_secrets, shikigami
-from janus.approve import BackToAtlasError, Click, Result
-from janus.backends import Backends
-from janus.models import Rejected, Submission, Submitted
-from janus.propose import ProposeError, pr_from
+from janus.clients import gitea, shikigami
+from janus.clients.backends import Backends
+from janus.core import approve, remove, request_secrets
+from janus.core.approve import BackToAtlasError, Click, Result
+from janus.core.propose import ProposeError, pr_from
+from janus.models.requests import Rejected, Submission, Submitted
 
 log = logging.getLogger("janus")
 

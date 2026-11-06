@@ -10,11 +10,11 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import TypeAdapter, ValidationError
 
-from janus import approve, intake
-from janus.approve import Click, Result
+from janus.api.deps import ApprovedPr, BackendsDep, Requester, atlas_approver
 from janus.config import Settings
-from janus.deps import ApprovedPr, BackendsDep, Requester, atlas_approver
-from janus.models import RequestPath
+from janus.core import approve, intake
+from janus.core.approve import Click, Result
+from janus.models.requests import RequestPath
 
 log = logging.getLogger("janus")
 REQUEST_PATH = TypeAdapter(RequestPath)

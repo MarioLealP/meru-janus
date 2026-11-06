@@ -22,7 +22,7 @@ import httpx2
 import yaml
 from pydantic import ConfigDict, Field, SecretStr, StringConstraints, ValidationError
 
-from janus.models import Incoming, Value
+from janus.models.requests import Incoming, Value
 
 # The request format's secret name (Shikigami's request_format.Name): it becomes an env var, NAME_UPPER.
 SecretName = Annotated[str, StringConstraints(pattern=r"^[a-z]([-a-z0-9]{0,28}[a-z0-9])?$")]

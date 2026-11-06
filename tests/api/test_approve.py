@@ -5,13 +5,14 @@ from urllib.parse import parse_qs, urlsplit
 import httpx2
 import pytest
 
-from janus import approve, gitea, shikigami
-from janus.app import create_app
-from janus.approve import COOKIE, Click, NotApprovedError, Outcome, Result, back_url, nonce
+from janus.api.app import create_app
+from janus.clients import gitea, shikigami
+from janus.clients.gitea import NotOnMainError
 from janus.config import Settings
-from janus.gitea import NotOnMainError
-from janus.models import Submission, Verdict
-from janus.propose import Proposer
+from janus.core import approve
+from janus.core.approve import COOKIE, Click, NotApprovedError, Outcome, Result, back_url, nonce
+from janus.core.propose import Proposer
+from janus.models.requests import Submission, Verdict
 
 HEAD = "a" * 40
 MARIO = {"X-Authentik-Username": "akadmin", "X-Authentik-Groups": "clockmost-admins|meru-approvers"}
