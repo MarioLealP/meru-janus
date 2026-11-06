@@ -14,8 +14,8 @@ from pathlib import Path
 
 from pydantic import ConfigDict, Field, SecretStr
 
-from janus.models import Submission, Value
-from janus.remove import is_removed
+from janus.core.remove import is_removed
+from janus.models.requests import Submission, Value
 
 PR_URL = re.compile(r"(https?://\S+/pulls/(\d+))")
 

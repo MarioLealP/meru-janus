@@ -5,9 +5,9 @@ from fastapi import HTTPException
 from pydantic import ConfigDict
 
 from janus.config import Settings
-from janus.models import Value
-from janus.propose import Proposer
-from janus.request_secrets import Vault
+from janus.core.propose import Proposer
+from janus.core.request_secrets import Vault
+from janus.models.requests import Value
 
 NO_BOT = "Janus has no Gitea bot yet"
 

@@ -6,11 +6,11 @@ import httpx2
 import pytest
 from pydantic import SecretStr
 
-from janus import gitea, shikigami
-from janus.app import create_app
+from janus.api.app import create_app
+from janus.clients import gitea, shikigami
 from janus.config import Settings
-from janus.models import Pending, Submission, Verdict
-from janus.propose import Proposer
+from janus.core.propose import Proposer
+from janus.models.requests import Pending, Submission, Verdict
 
 ID = {"X-Authentik-Username": "agent-claude"}
 GOOD = {"path": "apps/golem.yaml", "content": "kind: App\n"}
@@ -145,8 +145,8 @@ TANUKI = (
 
 def secrets_flow(monkeypatch: pytest.MonkeyPatch, on_main: bool = False, refuse: str | None = None) -> list[str]:
     """Shikigami says fine; records the order of OpenBao writes and PRs."""
-    from janus.gitea import NotOnMainError
-    from janus.request_secrets import NotWrittenError, Vault
+    from janus.clients.gitea import NotOnMainError
+    from janus.core.request_secrets import NotWrittenError, Vault
 
     order: list[str] = []
 

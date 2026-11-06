@@ -1,6 +1,6 @@
 import pytest
 
-from janus.remove import UnremovableError, is_removed, mark_removed
+from janus.core.remove import UnremovableError, is_removed, mark_removed
 
 KITSUNE = """# a comment stays
 apiVersion: meru.clockmost.com/v1

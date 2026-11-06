@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-janus = "janus.cli:main" # the command line (D94): uv tool install git+ssh://git@git.clockmost.com/Meru/janus.git
+janus = "janus.cli.main:main" # the command line (D94): uv tool install git+ssh://git@git.clockmost.com/Meru/janus.git
 
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14"]

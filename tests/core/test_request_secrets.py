@@ -6,7 +6,7 @@ import httpx2
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from janus.request_secrets import NotWrittenError, Requested, Vault, requested, values_for
+from janus.core.request_secrets import NotWrittenError, Requested, Vault, requested, values_for
 
 TANUKI = """apiVersion: meru.clockmost.com/v1
 kind: App
@@ -101,7 +101,7 @@ def test_without_the_mounted_login_janus_isnt_ready(tmp_path: Path):
 def test_a_change_entry_is_the_day_and_six_hex():
     from datetime import date
 
-    from janus.request_secrets import new_entry
+    from janus.core.request_secrets import new_entry
 
     one, two = new_entry(date(2026, 11, 5)), new_entry(date(2026, 11, 5))
     assert one.startswith("env-20261105-")
@@ -111,7 +111,7 @@ def test_a_change_entry_is_the_day_and_six_hex():
 
 @pytest.mark.parametrize("line", ["    entry: new", "    entry: 'new'", '    entry: "new"  ', "  - entry: new"])
 def test_entry_new_is_replaced_in_place(line: str):
-    from janus.request_secrets import with_entry
+    from janus.core.request_secrets import with_entry
 
     filled = with_entry(f"spec:\n  secrets:\n    - name: a\n{line}\n    - name: b\n", "env-20261105-a1b2c3")
     assert "new" not in filled.replace("name", "")
@@ -119,7 +119,7 @@ def test_entry_new_is_replaced_in_place(line: str):
 
 
 def test_a_file_without_entry_new_is_not_a_change():
-    from janus.request_secrets import with_entry
+    from janus.core.request_secrets import with_entry
 
     with pytest.raises(NotWrittenError):
         with_entry("spec:\n  secrets:\n    - name: a\n      entry: env\n    - name: renew\n", "env-20261105-a1b2c3")

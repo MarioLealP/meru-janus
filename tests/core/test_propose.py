@@ -6,8 +6,8 @@ import pytest
 from pydantic import SecretStr
 
 from janus.config import Settings
-from janus.models import Submission
-from janus.propose import Proposer, pr_from, title_for, topic_for
+from janus.core.propose import Proposer, pr_from, title_for, topic_for
+from janus.models.requests import Submission
 
 
 def bare_repo(tmp_path: Path) -> Path:

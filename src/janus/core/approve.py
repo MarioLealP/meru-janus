@@ -23,7 +23,7 @@ from urllib.parse import quote, urlencode
 import httpx2
 from pydantic import Field, StringConstraints, TypeAdapter, ValidationError
 
-from janus.models import Incoming, Value
+from janus.models.requests import Incoming, Value
 
 Decision = Literal["approve", "deny"]
 DECISION = TypeAdapter(Decision)

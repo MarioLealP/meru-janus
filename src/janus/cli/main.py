@@ -30,8 +30,8 @@ import httpx2
 from pydantic import ConfigDict, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from janus.models import Incoming, OnMain, Pending, Rejected, Submission, Submitted, Value
-from janus.request_secrets import NEW, requested
+from janus.core.request_secrets import NEW, requested
+from janus.models.requests import Incoming, OnMain, Pending, Rejected, Submission, Submitted, Value
 
 # What the token must carry for Authentik's proxy outpost to know who it is: without ak_proxy (and the profile claims
 # it fills the X-Authentik-* headers from) the token is valid but the outpost answers 403.

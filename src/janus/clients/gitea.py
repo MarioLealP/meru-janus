@@ -8,8 +8,8 @@ import re
 import httpx2
 from pydantic import TypeAdapter
 
-from janus.models import Incoming, OnMain, Pending
-from janus.remove import is_removed
+from janus.core.remove import is_removed
+from janus.models.requests import Incoming, OnMain, Pending
 
 REQUESTED_BY = re.compile(r"^Requested-By: (\S+)$", re.MULTILINE)
 
