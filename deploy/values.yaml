@@ -27,3 +27,7 @@ openbaoLogin:
 networkPolicy:
   enabled: true
   fromNamespaces: []
+
+# Crash reports (D125): this app's GlitchTip project, which Shikigami made (it predates the marker's own DSN line).
+glitchtip:
+  dsn: https://61c3d3e46939489797f58a7319c15045@glitchtip.clockmost.com/8
