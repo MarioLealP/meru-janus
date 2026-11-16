@@ -1,4 +1,4 @@
-# janus
+# Janus - request intake
 
 Meru's front door - takes requests from the atlas and agents, hands approvals to Xolotl
 
