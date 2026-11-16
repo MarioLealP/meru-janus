@@ -57,13 +57,15 @@ class Fake(BaseModel):
         return httpx2.Response(201, json=answer | {"checked_against": "c1"})
 
 
-def settings() -> ClientSettings:
-    return ClientSettings(url=URL, token_url=TOKEN_URL, client_id="cid", password=SecretStr("app-pw"))
+def settings(assertion_file: Path = Path("/nonexistent/token")) -> ClientSettings:
+    return ClientSettings(
+        url=URL, token_url=TOKEN_URL, client_id="cid", password=SecretStr("app-pw"), assertion_file=assertion_file
+    )
 
 
-def call(fake: Fake, *argv: str) -> int:
+def call(fake: Fake, *argv: str, s: ClientSettings | None = None) -> int:
     with httpx2.Client(transport=httpx2.MockTransport(fake.handler)) as http:
-        return run(list(argv), http, settings())
+        return run(list(argv), http, s or settings())
 
 
 @pytest.fixture
@@ -123,6 +125,27 @@ def test_a_file_outside_apps_or_databases_is_refused_before_signing_in(tmp_path:
 def test_a_refused_sign_in_says_so():
     with pytest.raises(CliError, match="Authentik refused the sign-in as agent-claude: 400"):
         call(Fake(refuse_sign_in=True), "pending")
+
+
+def test_in_a_pod_it_signs_in_with_the_pod_token_and_no_password(tmp_path: Path):
+    token = tmp_path / "token"
+    token.write_text("k3s-jwt\n")
+    fake = Fake()
+    assert call(fake, "pending", s=settings(token)) == 0
+    [form] = fake.sign_ins
+    assert form["client_assertion"] == ["k3s-jwt"]
+    assert form["client_assertion_type"] == ["urn:ietf:params:oauth:client-assertion-type:jwt-bearer"]
+    assert form["client_id"] == ["cid"]
+    assert "ak_proxy" in form["scope"][0].split()
+    assert "password" not in form
+    assert "username" not in form
+
+
+def test_a_refused_pod_sign_in_names_the_pod(tmp_path: Path):
+    token = tmp_path / "token"
+    token.write_text("k3s-jwt")
+    with pytest.raises(CliError, match="refused the sign-in as this pod's service account: 400"):
+        call(Fake(refuse_sign_in=True), "pending", s=settings(token))
 
 
 TANUKI = (

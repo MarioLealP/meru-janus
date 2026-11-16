@@ -9,10 +9,12 @@ while typing). Janus writes the values to OpenBao before the PR opens; they neve
 A file already on main keeps the values its app has (a restore of a retired app, D106), except the names a change
 marks `entry: new` (D123): submit asks for those, Janus writes them to a fresh entry and puts its name in the file.
 
-It signs in as an Authentik service account (agent-claude by default): the account's app password - from KeePassXC
-through the Secret Service, or JANUS_CLIENT_PASSWORD where there's no desktop - is exchanged for a Bearer JWT for
-the atlas application (client credentials). The token lives in memory for this one run, never on disk. Caddy checks
-it with Authentik and drops it before Janus, which only sees who asked (the same path as a browser session).
+It signs in to Authentik with client credentials and gets a Bearer JWT for the atlas application. In a pod with
+nuwa-app's authentikLogin (the agents pod) it sends the pod's own k3s token as the assertion (D104): no password
+anywhere. Elsewhere (the desktop) it signs in as a service account (agent-claude by default) with its app password -
+from KeePassXC through the Secret Service, or JANUS_CLIENT_PASSWORD. The token lives in memory for this one run,
+never on disk. Caddy checks it with Authentik and drops it before Janus, which only sees who asked (the same path as
+a browser session).
 
 Only the shared models come from the server's code; nothing here reads Janus's own settings.
 """
@@ -46,6 +48,9 @@ class ClientSettings(BaseSettings):
     url: str = "https://atlas.clockmost.com/api/janus"
     token_url: str = "https://auth.clockmost.com/application/o/token/"
     client_id: str = "TbOHmPug3NjRqzNTBJKG1gPHpFGfsq3QjvJ2hFDc"  # the atlas's Authentik provider (an identifier)
+    # The pod's projected k3s token (nuwa-app authentikLogin, audience authentik); used instead of the password when
+    # the file exists. The kubelet renews it, so it's read fresh on every run.
+    assertion_file: Path = Path("/var/run/meru/authentik/token")
     username: str = "agent-claude"
     # The KeePassXC entry (group Desktop apps) the password is looked up by, when JANUS_CLIENT_PASSWORD isn't set.
     secret_title: str = "agent-claude - Authentik app password"
@@ -79,18 +84,24 @@ def password(s: ClientSettings) -> SecretStr:
     return SecretStr(found.stdout.rstrip("\n"))
 
 
+def credentials(s: ClientSettings) -> tuple[str, dict[str, str]]:
+    """Who signs in and the form fields that prove it: the pod's k3s token if there is one, else the app password."""
+    if s.assertion_file.is_file():
+        assertion = s.assertion_file.read_text().strip()
+        return "this pod's service account", {
+            "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            "client_assertion": assertion,
+        }
+    return s.username, {"username": s.username, "password": password(s).get_secret_value()}
+
+
 def sign_in(http: httpx2.Client, s: ClientSettings) -> SecretStr:
-    """The app password -> a Bearer JWT for the atlas (Authentik's client credentials grant)."""
-    form = {
-        "grant_type": "client_credentials",
-        "client_id": s.client_id,
-        "username": s.username,
-        "password": password(s).get_secret_value(),
-        "scope": SCOPES,
-    }
+    """The pod token or app password -> a Bearer JWT for the atlas (Authentik's client credentials grant)."""
+    who, proof = credentials(s)
+    form = {"grant_type": "client_credentials", "client_id": s.client_id, "scope": SCOPES} | proof
     response = http.post(s.token_url, data=form)
     if response.status_code != 200:
-        raise CliError(f"Authentik refused the sign-in as {s.username}: {response.status_code} {response.text[:200]}")
+        raise CliError(f"Authentik refused the sign-in as {who}: {response.status_code} {response.text[:200]}")
     return Token.model_validate_json(response.content).access_token
 
 
