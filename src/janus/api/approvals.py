@@ -4,6 +4,7 @@ Every ending is a 303 back to the atlas; `deps.py` refuses a click that isn't fr
 """
 
 import logging
+from pathlib import PurePosixPath
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -82,6 +83,8 @@ async def remove_start(request: Request, backends: BackendsDep, who: Requester) 
         path = REQUEST_PATH.validate_python(form["path"][0])
     except KeyError, ValidationError:
         return back(backends.settings, Result.BAD_BUTTON)
+    if PurePosixPath(path).stem in backends.settings.platform_requests:
+        return back(backends.settings, Result.PLATFORM, decision="remove")
     return begin_approval(backends.settings, await intake.removal_click(backends, path, who))
 
 

@@ -22,8 +22,13 @@ FORM = {"head": HEAD, "decision": "approve"}
 
 # https: the approval cookie is Secure, so the test browser only sends it back over https
 @asynccontextmanager
-async def client(token: str | None = "tok") -> AsyncGenerator[httpx2.AsyncClient]:
-    app = create_app(Settings(gitea_token=token))
+async def client(
+    token: str | None = "tok", platform: frozenset[str] | None = None
+) -> AsyncGenerator[httpx2.AsyncClient]:
+    settings = Settings(gitea_token=token)
+    if platform is not None:
+        settings = settings.model_copy(update={"platform_requests": platform})
+    app = create_app(settings)
     transport = httpx2.ASGITransport(app=app)
     async with (
         app.router.lifespan_context(app),
@@ -245,6 +250,23 @@ async def test_a_remove_that_cant_go_ahead_opens_no_pr(
     assert "set-cookie" not in r.headers
     if result != "problems":
         assert proposed == []
+
+
+@pytest.mark.parametrize("path", ["apps/thoth.yaml", "databases/thoth.yaml", "apps/janus.yaml", "apps/xolotl.yaml"])
+async def test_meru_own_parts_cannot_be_removed(monkeypatch: pytest.MonkeyPatch, path: str):
+    proposed = removal(monkeypatch)
+    async with client() as c:
+        r = await remove(c, path=path)
+    assert landed(r)["res"] == "platform"
+    assert "set-cookie" not in r.headers
+    assert proposed == []
+
+
+async def test_the_platform_list_is_a_setting(monkeypatch: pytest.MonkeyPatch):
+    proposed = removal(monkeypatch)
+    async with client(platform=frozenset({"kitsune"})) as c:
+        assert landed(await remove(c))["res"] == "platform"
+    assert proposed == []
 
 
 async def test_without_the_bot_a_remove_is_refused_first_then_a_503():

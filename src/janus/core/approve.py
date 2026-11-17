@@ -39,6 +39,7 @@ class Result(StrEnum):
     DONE = "done"
     NOT_ON_MAIN = "not-on-main"  # Remove: no such request on main
     ALREADY_REMOVED = "already-removed"
+    PLATFORM = "platform"  # Remove: one of Meru's own parts (settings.platform_requests)
     NOT_ATLAS = "not-atlas"
     NOT_APPROVER = "not-approver"
     BAD_BUTTON = "bad-button"
