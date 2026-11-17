@@ -12,6 +12,7 @@ class NoQueryString(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Always let the record through, with its query string removed."""
         args = record.args
         if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
             record.args = (*args[:2], args[2].partition("?")[0], *args[3:])
