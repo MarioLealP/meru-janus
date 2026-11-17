@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import PlainTextResponse
 
 from janus.api import approvals, health, requests
+from janus.api.logs import NoQueryString
 from janus.clients.backends import backends_for
 from janus.config import Settings
 from janus.core.approve import BackToAtlasError
@@ -62,4 +63,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+logging.getLogger("uvicorn.access").addFilter(NoQueryString())  # uvicorn's dictConfig leaves logger filters alone
 app = create_app()
