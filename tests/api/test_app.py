@@ -54,13 +54,22 @@ async def test_no_route_is_reached_without_an_identity(method: str, path: str):
     async with client() as c:
         r = await c.request(method, path)
     assert r.status_code == 403
-    assert r.text == "forbidden: no SSO identity"
+    assert r.headers["content-type"] == "application/problem+json"
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "Forbidden",
+        "status": 403,
+        "detail": "forbidden: no SSO identity",
+    }
 
 
 async def test_a_bad_body_is_a_422_even_without_the_bot():
     async with client(token=None) as c:
         r = await c.post("/api/janus/requests", json={"path": "README.md", "content": ""}, headers=ID)
     assert r.status_code == 422
+    assert r.headers["content-type"] == "application/problem+json"
+    assert r.json()["title"] == "Unprocessable Content"
+    assert r.json()["errors"][0]["loc"] == ["body", "path"]
 
 
 async def test_without_the_bot_nothing_is_listed_or_proposed():
@@ -105,6 +114,7 @@ async def test_a_valid_file_is_proposed_in_the_callers_name(monkeypatch: pytest.
     async with client() as c:
         r = await c.post("/api/janus/requests", json=GOOD, headers=ID)
     assert r.status_code == 201
+    assert r.headers["location"] == "https://git.test/Meru/requests/pulls/12"
     assert r.json() == {
         "pr": 12,
         "url": "https://git.test/Meru/requests/pulls/12",
@@ -120,7 +130,11 @@ async def test_shikigami_down_is_a_502(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(shikigami, "validate", validate)
     async with client() as c:
-        assert (await c.post("/api/janus/requests", json=GOOD, headers=ID)).status_code == 502
+        r = await c.post("/api/janus/requests", json=GOOD, headers=ID)
+    assert r.status_code == 502
+    assert r.headers["content-type"] == "application/problem+json"
+    assert r.json()["title"] == "Bad Gateway"
+    assert "Shikigami" in r.json()["detail"]
 
 
 async def test_pending_lists_the_open_prs(monkeypatch: pytest.MonkeyPatch):

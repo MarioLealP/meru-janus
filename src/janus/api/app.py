@@ -14,9 +14,8 @@ from contextlib import asynccontextmanager
 import httpx2
 import sentry_sdk
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import PlainTextResponse
 
-from janus.api import approvals, health, requests
+from janus.api import approvals, health, problems, requests
 from janus.api.logs import NoQueryString
 from janus.clients.backends import backends_for
 from janus.config import Settings
@@ -49,8 +48,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.middleware("http")
     async def identity_guard(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         if request.url.path not in OPEN_PATHS and not request.headers.get(s.identity_header):
-            return PlainTextResponse("forbidden: no SSO identity", status_code=403)
+            return problems.response(
+                problems.Problem(title="Forbidden", status=403, detail="forbidden: no SSO identity")
+            )
         return await call_next(request)
+
+    problems.install(app)
 
     @app.exception_handler(BackToAtlasError)
     def back_to_atlas(_: Request, e: BackToAtlasError) -> Response:
