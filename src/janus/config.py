@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     openbao_role: str = "meru-janus-secrets"
     openbao_dir: Path = Path("/var/run/meru/openbao")  # token, ca.crt (nuwa-app openbaoLogin)
 
+    # Meru's own parts (cm-6ko3): a Remove of an app or database with one of these names is refused - removing Thoth
+    # or Janus through Janus would take the platform's own request files off main. Both kinds: databases/thoth too.
+    platform_requests: frozenset[str] = frozenset({"thoth", "shikigami", "xolotl", "janus"})
+
     # The root filesystem is read-only; each proposal clones into its own folder here.
     work_dir: Path = Path(tempfile.gettempdir())
     http_timeout: float = 20.0
