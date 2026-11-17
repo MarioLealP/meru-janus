@@ -3,7 +3,7 @@
 from typing import Any
 
 import httpx2
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import JSONResponse
 
 from janus.api.deps import BackendsDep, BotToken, Requester
@@ -41,13 +41,17 @@ async def list_on_main(backends: BackendsDep, token: BotToken) -> list[OnMain]:
 
 
 @router.post("/requests", status_code=201, response_model=Submitted, responses={422: {"model": Rejected}})
-async def submit(body: Submit, backends: BackendsDep, who: Requester) -> Submitted | JSONResponse:
+async def submit(body: Submit, backends: BackendsDep, who: Requester, response: Response) -> Submitted | JSONResponse:
     """Propose a request file, with the values of the secrets it names (D99).
 
     Shikigami checks it against main first; a new app's secret values go to OpenBao; then a valid file becomes a PR
-    (or updates the open PR for the same file). Who asked is the Authentik identity Caddy passed on.
+    (or updates the open PR for the same file). Who asked is the Authentik identity Caddy passed on. The created
+    PR's address is the `Location` (RFC 9110). A Shikigami rejection stays its own 422 body (`problems`,
+    `checked_against`), the shape the janus CLI reads.
     """
     answer = await intake.check_and_propose(backends, body.submission(), who, body.secrets)
     if isinstance(answer, Rejected):
         return JSONResponse(answer.model_dump(), status_code=422)
+    if answer[0].url:
+        response.headers["Location"] = answer[0].url
     return answer[0]
