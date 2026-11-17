@@ -153,11 +153,14 @@ def from_the_atlas(sec_fetch_site: str | None, origin: str | None, atlas_origin:
     return origin == atlas_origin
 
 
-async def hand_to_xolotl(http: httpx2.AsyncClient, url: str, click: Click, code: str) -> Outcome:
-    """Give Xolotl the one-time code and what was clicked; NotApprovedError unless it answers 200."""
+async def hand_to_xolotl(http: httpx2.AsyncClient, url: str, click: Click, code: str, timeout: float) -> Outcome:
+    """Give Xolotl the one-time code and what was clicked; NotApprovedError unless it answers 200.
+
+    `timeout` is this call's own wait, longer than Xolotl's per-call limit, so Xolotl answers before Janus quits.
+    """
     body = {"pr": click.pr, "head": click.head, "decision": click.decision, "code": code}
     try:
-        response = await http.post(url, json=body)
+        response = await http.post(url, json=body, timeout=timeout)
     except httpx2.HTTPError as e:
         raise NotApprovedError(502, f"Xolotl can't be reached: {type(e).__name__}") from e
     if response.status_code != 200:

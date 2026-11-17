@@ -117,7 +117,7 @@ async def approve_callback(request: Request, backends: BackendsDep) -> Response:
     if not code:
         return done(back(s, Result.AUTHENTIK_NO, click.pr, said(click)))
     try:
-        outcome = await approve.hand_to_xolotl(backends.http, s.xolotl_approve_url, click, code)
+        outcome = await approve.hand_to_xolotl(backends.http, s.xolotl_approve_url, click, code, s.approve_timeout)
     except approve.NotApprovedError as e:
         log.warning("approval of PR #%d not done: %s %s", click.pr, e.status, e.reason)
         return done(back(s, approve.result_of(e.status), click.pr, said(click)))

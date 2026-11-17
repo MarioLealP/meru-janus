@@ -44,5 +44,8 @@ class Settings(BaseSettings):
     # The root filesystem is read-only; each proposal clones into its own folder here.
     work_dir: Path = Path(tempfile.gettempdir())
     http_timeout: float = 20.0
+    # How long Janus waits for Xolotl's /approve. Xolotl makes several calls of its own (each capped at its 20 s
+    # http_timeout), so this must stay above them: tied at 20 s, Janus gave up first and blamed Xolotl (2026-11-10).
+    approve_timeout: float = 60.0
     git_timeout: float = 60.0
     git_path: str = Field(default="/usr/bin:/bin", validation_alias="PATH")  # the pod's own PATH, for git

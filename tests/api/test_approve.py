@@ -94,8 +94,8 @@ def state_of(r) -> str:
 async def test_the_callback_hands_the_code_to_xolotl_with_what_was_clicked(monkeypatch: pytest.MonkeyPatch):
     seen = []
 
-    async def hand(_http, url: str, click: Click, code: str) -> Outcome:
-        seen.append((url, click.pr, click.head, click.decision, code))
+    async def hand(_http, url: str, click: Click, code: str, timeout: float) -> Outcome:
+        seen.append((url, click.pr, click.head, click.decision, code, timeout))
         return Outcome(pr=7, decision="approve", by="akadmin", commit="c0ffee")
 
     monkeypatch.setattr(approve, "hand_to_xolotl", hand)
@@ -108,7 +108,7 @@ async def test_the_callback_hands_the_code_to_xolotl_with_what_was_clicked(monke
             follow_redirects=False,
         )
     assert landed(r) == {"v": "requests", "res": "done", "pr": "7", "dec": "approve", "by": "akadmin", "c": "c0ffee"}
-    assert seen == [("http://xolotl.xolotl.svc/approve", 7, HEAD, "approve", "one-time")]
+    assert seen == [("http://xolotl.xolotl.svc/approve", 7, HEAD, "approve", "one-time", 60.0)]
     assert f'{COOKIE}=""' in r.headers["set-cookie"]  # used once: the cookie goes
 
 
@@ -165,6 +165,23 @@ async def test_xolotls_no_comes_back_as_a_fixed_code_never_its_text(
     assert "script" not in r.headers["location"]
 
 
+async def test_janus_waits_for_xolotl_longer_than_xolotls_own_per_call_timeout():
+    s = Settings()
+    assert (
+        s.approve_timeout > s.http_timeout
+    )  # tied at 20 s on 2026-11-10: Janus gave up first and named the wrong part
+    waits = []
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        waits.append(request.extensions["timeout"]["read"])
+        return httpx2.Response(200, json={"pr": 7, "decision": "approve", "by": "akadmin", "commit": "c0ffee"})
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(answer), timeout=s.http_timeout) as http:
+        click = Click(pr=7, head=HEAD, decision="approve", state="s" * 43)
+        await approve.hand_to_xolotl(http, s.xolotl_approve_url, click, "one-time", s.approve_timeout)
+    assert waits == [s.approve_timeout]
+
+
 def test_values_in_the_hash_are_escaped():
     url = back_url("https://a.test", Result.DONE, 7, "approve", "a&r=evil", "c0ffee")
     assert url == "https://a.test/#v=requests&res=done&pr=7&dec=approve&by=a%26r%3Devil&c=c0ffee"
@@ -204,7 +221,7 @@ async def test_remove_opens_the_removal_pr_in_marios_name_and_approves_it_in_the
     proposed = removal(monkeypatch)
     seen = []
 
-    async def hand(_http, _url, click: Click, code: str) -> Outcome:
+    async def hand(_http, _url, click: Click, code: str, timeout: float) -> Outcome:
         seen.append((click.pr, click.head, click.decision))
         return Outcome(pr=13, decision="approve", by="akadmin", commit="c0ffee")
 
