@@ -50,7 +50,7 @@ class Verdict(Incoming):
 
 
 class Submitted(Value):
-    """A proposal that went in: the PR waiting for Mario's approval in the atlas (D93)."""
+    """A proposal that went in: the PR waiting for Mario's merge on Gitea (D93)."""
 
     pr: int | None  # None when Gitea's push answer named no PR (shouldn't happen; the push itself went through)
     url: str | None
@@ -73,7 +73,7 @@ class Pending(Value):
     url: str
     author: str  # the Gitea user that opened it (janus for everything through here, else a person)
     requested_by: str | None  # who asked, from Janus's Requested-By line
-    head: str  # the commit an approval would be for (J2)
+    head: str  # the PR's head commit - the atlas shows it and posts it back (its schema needs it); Janus ignores it
     files: list[str]
 
 

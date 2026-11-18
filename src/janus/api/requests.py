@@ -52,6 +52,6 @@ async def submit(body: Submit, backends: BackendsDep, who: Requester, response: 
     answer = await intake.check_and_propose(backends, body.submission(), who, body.secrets)
     if isinstance(answer, Rejected):
         return JSONResponse(answer.model_dump(), status_code=422)
-    if answer[0].url:
-        response.headers["Location"] = answer[0].url
-    return answer[0]
+    if answer.url:
+        response.headers["Location"] = answer.url
+    return answer

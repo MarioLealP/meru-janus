@@ -78,8 +78,8 @@ class Proposer(Value):
             raise ProposeError(f"git {args[0]} failed: {text.strip()[-300:]}")
         return text
 
-    async def propose(self, submission: Submission, requested_by: str, checked_against: str) -> tuple[str, str, str]:
-        """Push the file as a PR. Returns (title, git's push output - it names the PR, the PR's head commit)."""
+    async def propose(self, submission: Submission, requested_by: str, checked_against: str) -> tuple[str, str]:
+        """Push the file as a PR. Returns (title, git's push output - it names the PR)."""
         async with self.lock:
             with tempfile.TemporaryDirectory(dir=self.work_dir) as tmp:
                 clone = Path(tmp)
@@ -105,12 +105,11 @@ class Proposer(Value):
                     clone, "-c", f"user.name={self.user}", "-c", f"user.email={self.user}@clockmost.com",
                     "commit", "--quiet", f"--author={author}", "-m", message,
                 )  # fmt: skip
-                head = (await self._git(clone, "rev-parse", "HEAD")).strip()
                 output = await self._git(
                     clone, "push", "--porcelain", self.repo_url, "HEAD:refs/for/main",
                     "-o", f"topic={topic_for(submission)}", "-o", f"title={title}",
                 )  # fmt: skip
-                return title, output, head
+                return title, output
 
 
 def pr_from(output: str) -> tuple[int | None, str | None]:
