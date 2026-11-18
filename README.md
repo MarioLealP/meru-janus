@@ -1,6 +1,6 @@
 # Janus - request intake
 
-Meru's front door - takes requests from the atlas and agents, hands approvals to Xolotl
+Meru's front door - takes requests from the atlas and agents, Mario merges them on Gitea
 
 A Meru app, made from the [Meru/nuwa-python](https://git.clockmost.com/Meru/nuwa-python) template: a FastAPI service
 with one endpoint, `GET /heartbeat` -> `ok`, to grow from.

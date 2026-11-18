@@ -4,18 +4,15 @@ Not here, on purpose:
 
 - the SSO identity check: it's middleware in app.py, so it also covers paths no route answers.
 - the Gitea bot check on POST /requests and the Remove: a dependency runs before FastAPI checks the body and before the
-  route's own steps, which would turn those routes' 422 and redirect answers into 503s when there's no bot. They ask
+  route's own steps, which would turn those routes' 422 answers into 503s when there's no bot. They ask
   `Backends` where they need it.
 """
 
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 
 from janus.clients.backends import Backends
-from janus.config import Settings
-from janus.core import approve
-from janus.core.approve import BackToAtlasError, Result
 
 
 def get_backends(request: Request) -> Backends:
@@ -42,23 +39,14 @@ def requester(request: Request, backends: BackendsDep) -> str:
 Requester = Annotated[str, Depends(requester)]
 
 
-def check_click(request: Request, s: Settings, pr: int | None) -> None:
-    """Approve / Deny / Remove only from the atlas's own page, and only for approvers."""
-    if not approve.from_the_atlas(request.headers.get("sec-fetch-site"), request.headers.get("origin"), s.atlas_origin):
-        raise BackToAtlasError(Result.NOT_ATLAS, pr)
-    if s.approvers_group not in request.headers.get(s.groups_header, "").split("|"):
-        raise BackToAtlasError(Result.NOT_APPROVER, pr)
+def same_origin(request: Request, backends: BackendsDep) -> None:
+    """Refuse a browser POST that didn't come from the atlas's own page (a cross-site form).
 
-
-def atlas_approver(request: Request, backends: BackendsDep) -> None:
-    """Check a click that isn't for a PR yet (the Remove)."""
-    check_click(request, backends.settings, None)
-
-
-def atlas_approver_of(pr: int, request: Request, backends: BackendsDep) -> int:
-    """Check a click on a PR and hand on its number. A `pr` that isn't a number stops at FastAPI's 422 first."""
-    check_click(request, backends.settings, pr)
-    return pr
-
-
-ApprovedPr = Annotated[int, Depends(atlas_approver_of)]
+    Modern browsers send Sec-Fetch-Site; Origin is the fallback. A caller without either (the janus CLI) passes.
+    """
+    site, origin = request.headers.get("sec-fetch-site"), request.headers.get("origin")
+    if site is None and origin is None:
+        return
+    if (site == "same-origin") if site is not None else (origin == backends.settings.atlas_origin):
+        return
+    raise HTTPException(403, "this button only works from the atlas's own page")

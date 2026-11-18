@@ -3,8 +3,8 @@
 Takes request files from the atlas and agents (Authentik identities via Caddy), checks them with Shikigami, and opens
 them as PRs on Meru/requests that wait for Mario's approval.
 
-J1: submit + list. J2 (D98): Approve / Deny start Authentik's silent check and hand the one-time code to Xolotl.
-J3: the atlas's Remove - Janus opens the removal PR in Mario's name and approves it in the same click (same check).
+J1: submit + list. Approving is Mario's merge on the Gitea PR page (platform rework phase 3): the atlas's Approve /
+Deny buttons redirect there, and its Remove opens the removal PR and redirects to it.
 """
 
 import logging
@@ -19,7 +19,6 @@ from janus.api import approvals, health, problems, requests
 from janus.api.logs import NoQueryString
 from janus.clients.backends import backends_for
 from janus.config import Settings
-from janus.core.approve import BackToAtlasError
 
 log = logging.getLogger("janus")
 OPEN_PATHS = {"/heartbeat"}  # the probes, from the kubelet - no identity there
@@ -54,10 +53,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await call_next(request)
 
     problems.install(app)
-
-    @app.exception_handler(BackToAtlasError)
-    def back_to_atlas(_: Request, e: BackToAtlasError) -> Response:
-        return approvals.back(s, e.result, e.pr, e.decision)
 
     app.include_router(health.router)
     app.include_router(requests.router)
