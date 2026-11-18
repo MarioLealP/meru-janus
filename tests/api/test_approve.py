@@ -97,9 +97,9 @@ def removal(
             Pending(pr=5, title="t", url=PAGE.format(5), author="janus", requested_by="x", head=HEAD, files=open_files)
         ]
 
-    async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str, str]:
+    async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str]:
         proposed.append((submission.path, submission.content, who))
-        return "feat(request): remove app kitsune", "remote:   https://git.test/Meru/requests/pulls/13\n", HEAD
+        return "feat(request): remove app kitsune", "remote:   https://git.test/Meru/requests/pulls/13\n"
 
     monkeypatch.setattr(gitea, "read_main", read_main)
     monkeypatch.setattr(gitea, "pending", pending)

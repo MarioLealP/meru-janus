@@ -11,7 +11,6 @@ must pass) and closes it there to deny. The atlas's buttons keep posting here un
   (a new PR), so it keeps the cheap same-origin check against a cross-site form POST.
 """
 
-import logging
 from pathlib import PurePosixPath
 from urllib.parse import parse_qs
 
@@ -25,7 +24,6 @@ from janus.clients import gitea
 from janus.core import intake
 from janus.models.requests import RequestPath
 
-log = logging.getLogger("janus")
 REQUEST_PATH = TypeAdapter(RequestPath)
 
 router = APIRouter(prefix="/api/janus/approve", responses={403: {"description": "No SSO identity"}})

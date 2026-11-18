@@ -104,9 +104,9 @@ async def test_a_valid_file_is_proposed_in_the_callers_name(monkeypatch: pytest.
     async def validate(_http, _url, _submission: Submission) -> Verdict:
         return Verdict(commit="c0ffee", problems=[])
 
-    async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str, str]:
+    async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str]:
         calls.append((submission.path, who, checked))
-        return "feat(request): add app golem", "remote:   https://git.test/Meru/requests/pulls/12\n", "h"
+        return "feat(request): add app golem", "remote:   https://git.test/Meru/requests/pulls/12\n"
 
     monkeypatch.setattr(shikigami, "validate", validate)
     monkeypatch.setattr(Proposer, "propose", propose)
@@ -178,10 +178,10 @@ def secrets_flow(monkeypatch: pytest.MonkeyPatch, on_main: bool = False, refuse:
         shown = ",".join(f"{k}={v.get_secret_value()}" for k, v in sorted(values.items()) if k != "session-key")
         order.append(f"openbao {app} {entry} {sorted(values)} {shown}")
 
-    async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str, str]:
+    async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str]:
         assert "typed-value" not in submission.content  # the values never reach the PR
         order.append(f"pr {submission.path}")
-        return "feat(request): add app tanuki", "remote:   https://git.test/Meru/requests/pulls/14\n", "h"
+        return "feat(request): add app tanuki", "remote:   https://git.test/Meru/requests/pulls/14\n"
 
     monkeypatch.setattr(shikigami, "validate", validate)
     monkeypatch.setattr(gitea, "read_main", read_main)
@@ -266,10 +266,10 @@ def change_flow(monkeypatch: pytest.MonkeyPatch, open_files: list[str] | None = 
     async def pending(*_args) -> list[Pending]:
         return [Pending(pr=9, title="t", url="u", author="janus", requested_by=None, head="h", files=open_files or [])]
 
-    async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str, str]:
+    async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str]:
         seen.append(submission.content)
         order.append(f"pr {submission.path}")
-        return "feat(request): change app tanuki", "remote:   https://git.test/Meru/requests/pulls/15\n", "h"
+        return "feat(request): change app tanuki", "remote:   https://git.test/Meru/requests/pulls/15\n"
 
     monkeypatch.setattr(gitea, "pending", pending)
     monkeypatch.setattr(Proposer, "propose", propose)

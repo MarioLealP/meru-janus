@@ -18,8 +18,8 @@ log = logging.getLogger("janus")
 
 async def check_and_propose(
     b: Backends, submission: Submission, who: str, values: dict[str, SecretStr] | None = None
-) -> tuple[Submitted, str] | Rejected:
-    """Check a request and open its PR, returning the PR and its head commit.
+) -> Submitted | Rejected:
+    """Check a request and open its PR, returning the PR.
 
     Shikigami checks the file against main; a new app's secret values go to OpenBao (D99), a running app's change to a
     new entry whose name replaces `entry: new` in the file first (D123); then a valid file becomes a PR (or updates the
@@ -39,13 +39,13 @@ async def check_and_propose(
     if problem := await store_secrets(b, submission, values or {}, entry):
         return Rejected(problems=[problem], checked_against=verdict.commit)
     try:
-        title, output, head = await proposer.propose(submission, who, verdict.commit)
+        title, output = await proposer.propose(submission, who, verdict.commit)
     except ProposeError as e:
         log.error("proposing %s for %s: %s", submission.path, who, e)
         raise HTTPException(502, "couldn't open the PR on Meru/requests") from e
     pr, url = pr_from(output)
     log.info("%s proposed %s: %s", who, submission.path, url or "PR not named in the push answer")
-    return Submitted(pr=pr, url=url, title=title, checked_against=verdict.commit), head
+    return Submitted(pr=pr, url=url, title=title, checked_against=verdict.commit)
 
 
 async def _on_main(b: Backends, path: str) -> bool:
@@ -70,7 +70,7 @@ async def _change_refused(b: Backends, path: str, on_main: bool) -> str | None:
     except httpx2.HTTPError as e:
         return f"secrets not written: can't see the open PRs ({type(e).__name__})"
     if open_pr := next((p for p in open_prs if path in p.files), None):
-        return f"{path} already has an open PR (#{open_pr.pr}) - approve or close it before a change"
+        return f"{path} already has an open PR (#{open_pr.pr}) - merge or close it before a change"
     return None
 
 
@@ -141,6 +141,6 @@ async def open_removal_pr(b: Backends, path: str, content: str, who: str) -> int
     if isinstance(answer, Rejected):
         log.warning("removing %s: Shikigami says %s", path, answer.problems)
         raise HTTPException(422, f"Shikigami refuses the removal of {path}: {'; '.join(answer.problems)}")
-    if answer[0].pr is None:
+    if answer.pr is None:
         raise HTTPException(502, "the PR was opened but its number wasn't in the push answer")
-    return answer[0].pr
+    return answer.pr
