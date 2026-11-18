@@ -46,7 +46,6 @@ async def test_everything_else_needs_an_sso_identity():
         ("GET", "/api/janus/apps"),
         ("POST", "/api/janus/approve/remove"),
         ("POST", "/api/janus/approve/7/start"),
-        ("GET", "/api/janus/approve/callback"),
         ("GET", "/no/such/route"),
     ],
 )

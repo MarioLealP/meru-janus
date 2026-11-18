@@ -26,15 +26,8 @@ class Settings(BaseSettings):
     # D94); requests without it are refused - nothing reaches Janus around Caddy (its NetworkPolicy).
     identity_header: str = "X-Authentik-Username"
 
-    # Approvals (D98): Janus starts Authentik's silent check for the xolotl-approvals app and hands the code to Xolotl,
-    # which alone can redeem it. No secret here.
-    authorize_url: str = "https://auth.clockmost.com/application/o/authorize/"
-    approvals_client_id: str = "xolotl-approvals"
-    approvals_redirect_uri: str = "https://atlas.clockmost.com/api/janus/approve/callback"
+    # The atlas's own page: a Remove POST must come from it (api/deps.py same_origin).
     atlas_origin: str = "https://atlas.clockmost.com"
-    xolotl_approve_url: str = "http://xolotl.xolotl.svc/approve"
-    approvers_group: str = "meru-approvers"  # only to fail early with a clear page - Xolotl checks the token itself
-    groups_header: str = "X-Authentik-Groups"  # forward-auth's list, "|"-separated
 
     # A new app's secret values (D99): Janus's own OpenBao login, create-only on apps/meru/<app>/eso/env.
     openbao_addr: str = "https://openbao.clockmost.internal:8204"
@@ -48,8 +41,9 @@ class Settings(BaseSettings):
     # The root filesystem is read-only; each proposal clones into its own folder here.
     work_dir: Path = Path(tempfile.gettempdir())
     http_timeout: float = 20.0
-    # How long Janus waits for Xolotl's /approve. Xolotl makes several calls of its own (each capped at its 20 s
-    # http_timeout), so this must stay above them: tied at 20 s, Janus gave up first and blamed Xolotl (2026-11-10).
-    approve_timeout: float = 60.0
     git_timeout: float = 60.0
     git_path: str = Field(default="/usr/bin:/bin", validation_alias="PATH")  # the pod's own PATH, for git
+
+    def pr_url(self, pr: int) -> str:
+        """The PR's page on Gitea, where Mario merges or closes it."""
+        return f"{self.gitea_url}/{self.org}/{self.requests_repo}/pulls/{pr}"

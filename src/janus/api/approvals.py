@@ -1,20 +1,28 @@
-"""The atlas's buttons (D98): Approve, Deny and Remove, and Authentik's answer to them.
+"""The atlas's Approve, Deny and Remove buttons, now only a way to the Gitea PR page.
 
-Every ending is a 303 back to the atlas; `deps.py` refuses a click that isn't from the atlas or isn't an approver's.
+Mario merges a request PR on Gitea (the merge button; Gitea's settings, declared in Tofu, decide who may and what
+must pass) and closes it there to deny. The atlas's buttons keep posting here until the atlas is retired, so:
+
+- Approve and Deny (both post to `/{pr}/start`) answer 303 See Other to the PR's page. No PR lookup: a redirect to
+  a page that doesn't exist or isn't a request PR changes nothing, and Gitea answers for itself. They hold no
+  credential, call nobody and need no check: nothing changes, so nothing can be forged (the PR number is an integer
+  or FastAPI's 422).
+- Remove opens the `removed: true` PR for a request on main and answers 303 to it. That one does change something
+  (a new PR), so it keeps the cheap same-origin check against a cross-site form POST.
 """
 
 import logging
 from pathlib import PurePosixPath
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Depends, Request, Response
+import httpx2
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import TypeAdapter, ValidationError
 
-from janus.api.deps import ApprovedPr, BackendsDep, Requester, atlas_approver
-from janus.config import Settings
-from janus.core import approve, intake
-from janus.core.approve import Click, Result
+from janus.api.deps import BackendsDep, Requester, same_origin
+from janus.clients import gitea
+from janus.core import intake
 from janus.models.requests import RequestPath
 
 log = logging.getLogger("janus")
@@ -23,105 +31,49 @@ REQUEST_PATH = TypeAdapter(RequestPath)
 router = APIRouter(prefix="/api/janus/approve", responses={403: {"description": "No SSO identity"}})
 
 
-def back(
-    s: Settings,
-    result: Result,
-    pr: int | None = None,
-    decision: str | None = None,
-    by: str | None = None,
-    commit: str | None = None,
-) -> Response:
-    """Send the browser back to the atlas's Requests view with a fixed result code."""
-    return RedirectResponse(approve.back_url(s.atlas_origin, result, pr, decision, by, commit), status_code=303)
+@router.post("/{pr}/start", status_code=303, response_class=RedirectResponse)
+async def approve_start(pr: int, backends: BackendsDep) -> Response:
+    """The atlas's Approve and Deny buttons (one form POST, a `decision` field Janus no longer needs): to the PR's page.
 
-
-def done(response: Response) -> Response:
-    """End the approval: its cookie goes."""
-    response.delete_cookie(approve.COOKIE, path=approve.COOKIE_PATH, secure=True, httponly=True, samesite="strict")
-    return response
-
-
-def said(click: Click) -> str:
-    """What the button said, for the atlas's message."""
-    return "remove" if click.removing else click.decision
-
-
-def begin_approval(s: Settings, click: Click) -> Response:
-    """Off to Authentik's silent check, with the click in a short HttpOnly cookie for the callback."""
-    url = approve.authorize_url(
-        s.authorize_url, s.approvals_client_id, s.approvals_redirect_uri, click, s.org, s.requests_repo
-    )
-    response = RedirectResponse(url, status_code=303)
-    response.set_cookie(
-        approve.COOKIE,
-        click.model_dump_json(),
-        max_age=approve.COOKIE_SECONDS,
-        path=approve.COOKIE_PATH,
-        secure=True,
-        httponly=True,
-        samesite="strict",
-    )
-    return response
+    Mario merges it there to approve and closes it to deny.
+    """
+    return RedirectResponse(backends.settings.pr_url(pr), status_code=303)
 
 
 @router.post(
     "/remove",
     status_code=303,
     response_class=RedirectResponse,
-    dependencies=[Depends(atlas_approver)],
-    responses={503: {"description": "Janus has no Gitea bot yet"}},
+    dependencies=[Depends(same_origin)],
+    responses={
+        404: {"description": "No such request on main"},
+        409: {"description": "Already removed, or the file has an open PR"},
+        422: {"description": "Not a request path, one of Meru's own parts, or Shikigami's problems"},
+        502: {"description": "An outside system didn't answer"},
+        503: {"description": "Janus has no Gitea bot yet"},
+    },
 )
 async def remove_start(request: Request, backends: BackendsDep, who: Requester) -> Response:
-    """Take the atlas's Remove, a form POST with the request's path.
+    """The atlas's Remove, a form POST with the request's path: open the removal PR and go to its page.
 
-    The file from main with `removed: true` becomes a PR in the clicker's name, and the click goes on as an Approve
-    of that PR - one click, the same check and the same write by Xolotl as any approval (D83: retiring is approved
-    like creating).
+    The file from main gets `removed: true` in a PR in the clicker's name; Mario merges it on Gitea. The retention
+    clock is Shikigami's to start, so nothing is stamped here.
     """
     form = parse_qs((await request.body()).decode(), max_num_fields=2)
     try:
         path = REQUEST_PATH.validate_python(form["path"][0])
     except KeyError, ValidationError:
-        return back(backends.settings, Result.BAD_BUTTON)
-    if PurePosixPath(path).stem in backends.settings.platform_requests:
-        return back(backends.settings, Result.PLATFORM, decision="remove")
-    return begin_approval(backends.settings, await intake.removal_click(backends, path, who))
-
-
-@router.post("/{pr}/start", status_code=303, response_class=RedirectResponse)
-async def approve_start(pr: ApprovedPr, request: Request, backends: BackendsDep) -> Response:
-    """Take the atlas's Approve / Deny button (a form POST with head + decision): off to Authentik's check."""
-    form = parse_qs((await request.body()).decode(), max_num_fields=4)
-    try:
-        click = approve.new_click(pr, form["head"][0], approve.DECISION.validate_python(form["decision"][0]))
-    except KeyError, ValidationError:
-        return back(backends.settings, Result.BAD_BUTTON, pr)
-    return begin_approval(backends.settings, click)
-
-
-@router.get("/callback", status_code=303, response_class=RedirectResponse)
-async def approve_callback(request: Request, backends: BackendsDep) -> Response:
-    """Take Authentik's answer: a code (or login_required) and the state.
-
-    Xolotl gets the code if the state is ours. Every ending goes back to the atlas's Requests view with a fixed
-    result code (no page of Janus's own).
-    """
+        raise HTTPException(422, "the form needs a request path (apps/<name>.yaml or databases/<name>.yaml)") from None
     s = backends.settings
-    click = approve.read_cookie(request.cookies.get(approve.COOKIE))
-    query = request.query_params
-    if click is None or not approve.same_click(click, query.get("state")):
-        return done(back(s, Result.NOT_YOURS))
-    if error := query.get("error"):
-        log.warning("approval of PR #%d: Authentik answered %s", click.pr, error)
-        if error in {"login_required", "consent_required", "interaction_required"}:
-            return done(back(s, Result.SIGN_IN, click.pr, said(click)))
-        return done(back(s, Result.AUTHENTIK_NO, click.pr, said(click)))
-    code = query.get("code")
-    if not code:
-        return done(back(s, Result.AUTHENTIK_NO, click.pr, said(click)))
+    if PurePosixPath(path).stem in s.platform_requests:
+        raise HTTPException(422, f"{path} is one of Meru's own parts and can't be removed here")
+    token = backends.bot()
+    text = await intake.removal_text(backends, path)
     try:
-        outcome = await approve.hand_to_xolotl(backends.http, s.xolotl_approve_url, click, code, s.approve_timeout)
-    except approve.NotApprovedError as e:
-        log.warning("approval of PR #%d not done: %s %s", click.pr, e.status, e.reason)
-        return done(back(s, approve.result_of(e.status), click.pr, said(click)))
-    return done(back(s, Result.DONE, outcome.pr, said(click), outcome.by, outcome.commit))
+        open_prs = await gitea.pending(backends.http, s.gitea_url, s.org, s.requests_repo, token, s.gitea_user)
+    except httpx2.HTTPError as e:
+        raise HTTPException(502, f"can't read Meru/requests: {type(e).__name__}") from e
+    if open_pr := next((p for p in open_prs if path in p.files), None):
+        raise HTTPException(409, f"{path} already has an open PR (#{open_pr.pr}) - merge or close it first")
+    pr = await intake.open_removal_pr(backends, path, text, who)
+    return RedirectResponse(s.pr_url(pr), status_code=303)

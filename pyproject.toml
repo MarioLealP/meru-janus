@@ -1,7 +1,7 @@
 [project]
 name = "janus"
 version = "0.1.0"
-description = "Meru's front door - takes requests from the atlas and agents, hands approvals to Xolotl"
+description = "Meru's front door - takes requests from the atlas and agents, Mario merges them on Gitea"
 requires-python = ">=3.15"
 dependencies = [
     "fastapi>=0.162.0",

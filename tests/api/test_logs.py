@@ -5,7 +5,7 @@ import pytest
 from janus.api import app as app_module
 from janus.api.logs import NoQueryString
 
-CALLBACK = "/api/janus/approve/callback?code=one-time&state=abc"
+SECRETISH = "/api/janus/requests?code=one-time&state=abc"
 
 
 def access_record(path: str) -> logging.LogRecord:
@@ -24,7 +24,7 @@ def access_record(path: str) -> logging.LogRecord:
 @pytest.mark.parametrize(
     ("path", "logged"),
     [
-        (CALLBACK, "/api/janus/approve/callback"),
+        (SECRETISH, "/api/janus/requests"),
         ("/api/janus/requests?x=1", "/api/janus/requests"),
         ("/heartbeat", "/heartbeat"),
     ],

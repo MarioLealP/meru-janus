@@ -1,7 +1,7 @@
 """Opening a request PR on Meru/requests as Janus's bot (D93).
 
 AGit: a push to refs/for/main, which Gitea turns into a PR. Read on the repo is enough for that; the bot can't push main
-or merge (only Xolotl writes main, D82).
+or merge (Mario merges on Gitea).
 
 The token reaches git through GIT_CONFIG_* environment variables (an http.extraHeader), never the command line or a
 file - nothing in /proc/<pid>/cmdline, nothing left in the clone.
@@ -96,7 +96,7 @@ class Proposer(Value):
                 # and push options can't carry newlines anyway.
                 message = (
                     f"{title}\n\n"
-                    f"Requested through Janus - waits for Mario's approval (D82). Checked by Shikigami against\n"
+                    f"Requested through Janus - waits for Mario's merge (D82). Checked by Shikigami against\n"
                     f"requests main {checked_against[:12]}.\n\n"
                     f"Requested-By: {requested_by}\nChecked-Against: {checked_against}\n"
                 )

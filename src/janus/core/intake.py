@@ -9,8 +9,7 @@ from pydantic import SecretStr
 
 from janus.clients import gitea, shikigami
 from janus.clients.backends import Backends
-from janus.core import approve, remove, request_secrets
-from janus.core.approve import BackToAtlasError, Click, Result
+from janus.core import remove, request_secrets
 from janus.core.propose import ProposeError, pr_from
 from janus.models.requests import Rejected, Submission, Submitted
 
@@ -119,34 +118,29 @@ async def store_secrets(
 
 
 async def removal_text(b: Backends, path: str) -> str:
-    """The file on main with `removed: true`; a click that can't go ahead ends at the atlas."""
+    """The file on main with `removed: true`; a 404, 409, 422 or 502 when it can't be."""
     s = b.settings
     try:
         text = await gitea.read_main(b.http, s.gitea_url, s.org, s.requests_repo, b.bot(), path)
     except gitea.NotOnMainError:
-        raise BackToAtlasError(Result.NOT_ON_MAIN, decision="remove") from None
-    except httpx2.HTTPError:
-        raise BackToAtlasError(Result.DOWN, decision="remove") from None
+        raise HTTPException(404, f"{path} isn't on main") from None
+    except httpx2.HTTPError as e:
+        raise HTTPException(502, f"can't read Meru/requests: {type(e).__name__}") from e
     if remove.is_removed(text):
-        raise BackToAtlasError(Result.ALREADY_REMOVED, decision="remove")
+        raise HTTPException(409, f"{path} is already removed")
     try:
         return remove.mark_removed(text)
     except remove.UnremovableError as e:
         log.warning("can't mark %s removed: %s", path, e)
-        raise BackToAtlasError(Result.BAD_BUTTON, decision="remove") from None
+        raise HTTPException(422, f"{path}'s layout can't be marked removed by line: {e}") from e
 
 
-async def removal_click(b: Backends, path: str, who: str) -> Click:
-    """Open the removal PR in `who`'s name and make the Approve of it: one click, as D83 wants."""
-    submission = Submission(path=path, content=await removal_text(b, path))
-    try:
-        answer = await check_and_propose(b, submission, who)
-    except HTTPException:
-        raise BackToAtlasError(Result.DOWN, decision="remove") from None
+async def open_removal_pr(b: Backends, path: str, content: str, who: str) -> int:
+    """Open the removal PR in `who`'s name and return its number (Mario merges it on Gitea)."""
+    answer = await check_and_propose(b, Submission(path=path, content=content), who)
     if isinstance(answer, Rejected):
         log.warning("removing %s: Shikigami says %s", path, answer.problems)
-        raise BackToAtlasError(Result.PROBLEMS, decision="remove")
-    submitted, head = answer
-    if submitted.pr is None:
-        raise BackToAtlasError(Result.DOWN, decision="remove")
-    return approve.new_click(submitted.pr, head, "approve", removing=True)
+        raise HTTPException(422, f"Shikigami refuses the removal of {path}: {'; '.join(answer.problems)}")
+    if answer[0].pr is None:
+        raise HTTPException(502, "the PR was opened but its number wasn't in the push answer")
+    return answer[0].pr

@@ -29,7 +29,7 @@ networkPolicy:
   hostAddresses: [10.42.0.1/32] # the node: the kubelet's probes and Caddy on the host (no Docker range any more)
   fromNamespaces: []
   egress: none
-  toNamespaces: [shikigami, xolotl] # request validation, approvals (their policies let janus in)
+  toNamespaces: [shikigami] # request validation (its policy lets janus in)
   toAddresses:
     - { cidr: 192.168.10.110/32, ports: [443, 8204] } # Caddy (Authentik, Gitea, GlitchTip) and OpenBao
 

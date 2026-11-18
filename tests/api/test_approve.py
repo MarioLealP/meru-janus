@@ -1,6 +1,7 @@
+"""The atlas's buttons now lead to the Gitea PR page (Mario merges there); nothing calls Xolotl or Authentik."""
+
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from urllib.parse import parse_qs, urlsplit
 
 import httpx2
 import pytest
@@ -9,18 +10,20 @@ from janus.api.app import create_app
 from janus.clients import gitea, shikigami
 from janus.clients.gitea import NotOnMainError
 from janus.config import Settings
-from janus.core import approve
-from janus.core.approve import COOKIE, Click, NotApprovedError, Outcome, Result, back_url, nonce
 from janus.core.propose import Proposer
-from janus.models.requests import Submission, Verdict
+from janus.models.requests import Pending, Submission, Verdict
 
 HEAD = "a" * 40
-MARIO = {"X-Authentik-Username": "akadmin", "X-Authentik-Groups": "clockmost-admins|meru-approvers"}
+MARIO = {"X-Authentik-Username": "akadmin"}
 FROM_ATLAS = MARIO | {"Sec-Fetch-Site": "same-origin"}
-FORM = {"head": HEAD, "decision": "approve"}
+PAGE = "https://git.clockmost.com/Meru/requests/pulls/{}"
+KITSUNE = "metadata:\n  name: kitsune\nspec:\n  owner: mario\n"
 
 
-# https: the approval cookie is Secure, so the test browser only sends it back over https
+def refuse_outside(request: httpx2.Request) -> httpx2.Response:
+    raise AssertionError(f"unexpected outbound call: {request.method} {request.url}")
+
+
 @asynccontextmanager
 async def client(
     token: str | None = "tok", platform: frozenset[str] | None = None
@@ -34,168 +37,49 @@ async def client(
         app.router.lifespan_context(app),
         httpx2.AsyncClient(transport=transport, base_url="https://atlas.clockmost.com") as c,
     ):
+        # Nothing here may reach Xolotl or Authentik (or anything else): any outbound call fails the test.
+        app.state.backends.http._transport = httpx2.MockTransport(refuse_outside)
         yield c
 
 
-async def start(c: httpx2.AsyncClient, headers: dict[str, str] = FROM_ATLAS, form: dict[str, str] = FORM):
-    return await c.post("/api/janus/approve/7/start", data=form, headers=headers, follow_redirects=False)
-
-
-async def test_start_sends_the_browser_to_authentik_silently_with_this_clicks_fingerprint():
+@pytest.mark.parametrize("decision", ["approve", "deny"])
+async def test_approve_and_deny_go_to_the_gitea_pr_page(decision: str):
     async with client() as c:
-        r = await start(c)
+        r = await c.post(
+            "/api/janus/approve/7/start", data={"head": HEAD, "decision": decision}, headers=MARIO,
+            follow_redirects=False,
+        )  # fmt: skip
     assert r.status_code == 303
-    url = urlsplit(r.headers["location"])
-    assert f"{url.scheme}://{url.netloc}{url.path}" == "https://auth.clockmost.com/application/o/authorize/"
-    q = {k: v[0] for k, v in parse_qs(url.query).items()}
-    assert q["prompt"] == "none"
-    assert q["client_id"] == "xolotl-approvals"
-    assert q["response_type"] == "code"
-    assert q["redirect_uri"] == "https://atlas.clockmost.com/api/janus/approve/callback"
-    assert q["nonce"] == nonce("Meru", "requests", 7, HEAD, "approve")
-    cookie = r.headers["set-cookie"]
-    assert f"{COOKIE}=" in cookie
-    assert "HttpOnly" in cookie
-    assert "SameSite=strict" in cookie
-    assert "Secure" in cookie
-    assert "Path=/api/janus/approve" in cookie
-
-
-@pytest.mark.parametrize(
-    ("headers", "why"),
-    [
-        (MARIO | {"Sec-Fetch-Site": "cross-site"}, "not-atlas"),
-        (MARIO | {"Sec-Fetch-Site": "same-site"}, "not-atlas"),  # another clockmost.com app's page
-        (MARIO | {"Origin": "https://evil.example"}, "not-atlas"),
-        (FROM_ATLAS | {"X-Authentik-Groups": "clockmost-admins"}, "not-approver"),
-    ],
-)
-async def test_start_only_from_the_atlas_page_and_only_for_approvers(headers: dict[str, str], why: str):
-    async with client() as c:
-        r = await start(c, headers=headers)
-    assert landed(r) == {"v": "requests", "res": why, "pr": "7"}
+    assert r.headers["location"] == PAGE.format(7)
     assert "set-cookie" not in r.headers
 
 
-@pytest.mark.parametrize("form", [{"head": "nope", "decision": "approve"}, {"head": HEAD, "decision": "merge"}, {}])
-async def test_a_button_without_a_commit_and_decision_starts_nothing(form: dict[str, str]):
-    async with client() as c:
-        assert landed(await start(c, form=form))["res"] == "bad-button"
-
-
-def landed(r) -> dict[str, str]:
-    """Where the browser was sent back to: the atlas's Requests view, with the result in the hash."""
+async def test_the_buttons_need_no_form_no_bot_and_no_page_check():
+    # a redirect to a page that isn't a request PR changes nothing, so there is no lookup to fail
+    async with client(token=None) as c:
+        r = await c.post("/api/janus/approve/99999/start", headers=MARIO, follow_redirects=False)
     assert r.status_code == 303
-    url = urlsplit(r.headers["location"])
-    assert f"{url.scheme}://{url.netloc}{url.path}" == "https://atlas.clockmost.com/"
-    assert not url.query
-    return {k: v[0] for k, v in parse_qs(url.fragment).items()}
+    assert r.headers["location"] == PAGE.format(99999)
 
 
-def state_of(r) -> str:
-    return parse_qs(urlsplit(r.headers["location"]).query)["state"][0]
-
-
-async def test_the_callback_hands_the_code_to_xolotl_with_what_was_clicked(monkeypatch: pytest.MonkeyPatch):
-    seen = []
-
-    async def hand(_http, url: str, click: Click, code: str, timeout: float) -> Outcome:
-        seen.append((url, click.pr, click.head, click.decision, code, timeout))
-        return Outcome(pr=7, decision="approve", by="akadmin", commit="c0ffee")
-
-    monkeypatch.setattr(approve, "hand_to_xolotl", hand)
+async def test_a_pr_that_isnt_a_number_is_a_422():
     async with client() as c:
-        state = state_of(await start(c))
-        r = await c.get(
-            "/api/janus/approve/callback",
-            params={"code": "one-time", "state": state},
-            headers=MARIO,
-            follow_redirects=False,
-        )
-    assert landed(r) == {"v": "requests", "res": "done", "pr": "7", "dec": "approve", "by": "akadmin", "c": "c0ffee"}
-    assert seen == [("http://xolotl.xolotl.svc/approve", 7, HEAD, "approve", "one-time", 60.0)]
-    assert f'{COOKIE}=""' in r.headers["set-cookie"]  # used once: the cookie goes
+        r = await c.post("/api/janus/approve/abc/start", headers=MARIO)
+    assert r.status_code == 422
 
 
-async def test_a_code_from_an_approval_not_started_here_goes_nowhere(monkeypatch: pytest.MonkeyPatch):
-    async def hand(*_args):
-        raise AssertionError("must not reach Xolotl")
-
-    monkeypatch.setattr(approve, "hand_to_xolotl", hand)
+@pytest.mark.parametrize("path", ["/api/janus/approve/callback", "/api/janus/approve/7/deny"])
+async def test_the_old_authentik_callback_and_decision_routes_are_gone(path: str):
     async with client() as c:
-        # a page sent Mario's browser straight to Authentik: a code and a state, but no cookie from a start
-        r = await c.get(
-            "/api/janus/approve/callback",
-            params={"code": "c", "state": "x" * 43},
-            headers=MARIO,
-            follow_redirects=False,
-        )
-        assert landed(r) == {"v": "requests", "res": "not-yours"}
-        await start(c)  # a real start, then an answer with someone else's state
-        r = await c.get(
-            "/api/janus/approve/callback",
-            params={"code": "c", "state": "y" * 43},
-            headers=MARIO,
-            follow_redirects=False,
-        )
-        assert landed(r)["res"] == "not-yours"
+        assert (await c.request("GET", path, headers=MARIO)).status_code in {404, 405}
 
 
-async def test_signed_out_at_authentik_says_sign_in_again():
-    async with client() as c:
-        state = state_of(await start(c))
-        r = await c.get(
-            "/api/janus/approve/callback",
-            params={"error": "login_required", "state": state},
-            headers=MARIO,
-            follow_redirects=False,
-        )
-    assert landed(r) == {"v": "requests", "res": "sign-in", "pr": "7", "dec": "approve"}
-
-
-@pytest.mark.parametrize(("status", "result"), [(403, "refused"), (409, "changed"), (422, "problems"), (502, "down")])
-async def test_xolotls_no_comes_back_as_a_fixed_code_never_its_text(
-    monkeypatch: pytest.MonkeyPatch, status: int, result: str
-):
-    async def hand(*_args):
-        raise NotApprovedError(status, "<script>alert(1)</script> PR #7 moved on")
-
-    monkeypatch.setattr(approve, "hand_to_xolotl", hand)
-    async with client() as c:
-        state = state_of(await start(c))
-        r = await c.get(
-            "/api/janus/approve/callback", params={"code": "c", "state": state}, headers=MARIO, follow_redirects=False
-        )
-    assert landed(r) == {"v": "requests", "res": result, "pr": "7", "dec": "approve"}
-    assert "script" not in r.headers["location"]
-
-
-async def test_janus_waits_for_xolotl_longer_than_xolotls_own_per_call_timeout():
-    s = Settings()
-    assert (
-        s.approve_timeout > s.http_timeout
-    )  # tied at 20 s on 2026-11-10: Janus gave up first and named the wrong part
-    waits = []
-
-    def answer(request: httpx2.Request) -> httpx2.Response:
-        waits.append(request.extensions["timeout"]["read"])
-        return httpx2.Response(200, json={"pr": 7, "decision": "approve", "by": "akadmin", "commit": "c0ffee"})
-
-    async with httpx2.AsyncClient(transport=httpx2.MockTransport(answer), timeout=s.http_timeout) as http:
-        click = Click(pr=7, head=HEAD, decision="approve", state="s" * 43)
-        await approve.hand_to_xolotl(http, s.xolotl_approve_url, click, "one-time", s.approve_timeout)
-    assert waits == [s.approve_timeout]
-
-
-def test_values_in_the_hash_are_escaped():
-    url = back_url("https://a.test", Result.DONE, 7, "approve", "a&r=evil", "c0ffee")
-    assert url == "https://a.test/#v=requests&res=done&pr=7&dec=approve&by=a%26r%3Devil&c=c0ffee"
-
-
-KITSUNE = "metadata:\n  name: kitsune\nspec:\n  owner: mario\n"
-
-
-def removal(monkeypatch: pytest.MonkeyPatch, text: str | None = KITSUNE, problems: list[str] | None = None) -> list:
+def removal(
+    monkeypatch: pytest.MonkeyPatch,
+    text: str | None = KITSUNE,
+    problems: list[str] | None = None,
+    open_files: list[str] | None = None,
+) -> list:
     proposed = []
 
     async def read_main(_http, _url, _org, _repo, _token, path: str) -> str:
@@ -206,11 +90,19 @@ def removal(monkeypatch: pytest.MonkeyPatch, text: str | None = KITSUNE, problem
     async def validate(_http, _url, _submission: Submission) -> Verdict:
         return Verdict(commit="main0", problems=problems or [])
 
+    async def pending(*_args) -> list[Pending]:
+        if not open_files:
+            return []
+        return [
+            Pending(pr=5, title="t", url=PAGE.format(5), author="janus", requested_by="x", head=HEAD, files=open_files)
+        ]
+
     async def propose(_self, submission: Submission, who: str, checked: str) -> tuple[str, str, str]:
         proposed.append((submission.path, submission.content, who))
         return "feat(request): remove app kitsune", "remote:   https://git.test/Meru/requests/pulls/13\n", HEAD
 
     monkeypatch.setattr(gitea, "read_main", read_main)
+    monkeypatch.setattr(gitea, "pending", pending)
     monkeypatch.setattr(shikigami, "validate", validate)
     monkeypatch.setattr(Proposer, "propose", propose)
     return proposed
@@ -220,53 +112,56 @@ async def remove(c: httpx2.AsyncClient, headers: dict[str, str] = FROM_ATLAS, pa
     return await c.post("/api/janus/approve/remove", data={"path": path}, headers=headers, follow_redirects=False)
 
 
-async def test_remove_opens_the_removal_pr_in_marios_name_and_approves_it_in_the_same_click(
-    monkeypatch: pytest.MonkeyPatch,
-):
+async def test_remove_opens_the_removal_pr_in_the_clickers_name_and_goes_to_its_page(monkeypatch: pytest.MonkeyPatch):
     proposed = removal(monkeypatch)
-    seen = []
-
-    async def hand(_http, _url, click: Click, code: str, timeout: float) -> Outcome:
-        seen.append((click.pr, click.head, click.decision))
-        return Outcome(pr=13, decision="approve", by="akadmin", commit="c0ffee")
-
-    monkeypatch.setattr(approve, "hand_to_xolotl", hand)
     async with client() as c:
         r = await remove(c)
-        assert proposed == [("apps/kitsune.yaml", KITSUNE + "  removed: true\n", "akadmin")]
-        q = {k: v[0] for k, v in parse_qs(urlsplit(r.headers["location"]).query).items()}
-        assert q["prompt"] == "none"
-        assert q["nonce"] == nonce("Meru", "requests", 13, HEAD, "approve")
-        r = await c.get(
-            "/api/janus/approve/callback",
-            params={"code": "c", "state": q["state"]},
-            headers=MARIO,
-            follow_redirects=False,
-        )
-    assert seen == [(13, HEAD, "approve")]
-    assert landed(r) == {"v": "requests", "res": "done", "pr": "13", "dec": "remove", "by": "akadmin", "c": "c0ffee"}
+    assert r.status_code == 303
+    assert r.headers["location"] == PAGE.format(13)
+    # only `removed: true`: no removedBy / removedAt, Shikigami starts the retention clock
+    assert proposed == [("apps/kitsune.yaml", KITSUNE + "  removed: true\n", "akadmin")]
+
+
+async def test_remove_also_works_for_a_caller_without_browser_headers(monkeypatch: pytest.MonkeyPatch):
+    removal(monkeypatch)
+    async with client() as c:
+        assert (await remove(c, headers=MARIO)).status_code == 303
 
 
 @pytest.mark.parametrize(
-    ("headers", "text", "problems", "result"),
+    ("text", "problems", "open_files", "status"),
     [
-        (MARIO | {"Sec-Fetch-Site": "cross-site"}, KITSUNE, None, "not-atlas"),
-        (FROM_ATLAS | {"X-Authentik-Groups": "clockmost-admins"}, KITSUNE, None, "not-approver"),
-        (FROM_ATLAS, None, None, "not-on-main"),
-        (FROM_ATLAS, KITSUNE + "  removed: true\n", None, "already-removed"),
-        (FROM_ATLAS, KITSUNE, ["apps/kitsune.yaml: something"], "problems"),
+        (None, None, None, 404),
+        (KITSUNE + "  removed: true\n", None, None, 409),
+        (KITSUNE, None, ["apps/kitsune.yaml"], 409),
+        (KITSUNE, ["apps/kitsune.yaml: something"], None, 422),
     ],
 )
-async def test_a_remove_that_cant_go_ahead_opens_no_pr(
-    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str], text: str | None, problems: list[str] | None, result: str
+async def test_a_remove_that_cant_go_ahead_is_a_problem_and_opens_no_pr(
+    monkeypatch: pytest.MonkeyPatch,
+    text: str | None,
+    problems: list[str] | None,
+    open_files: list[str] | None,
+    status: int,
 ):
-    proposed = removal(monkeypatch, text, problems)
+    proposed = removal(monkeypatch, text, problems, open_files)
     async with client() as c:
-        r = await remove(c, headers=headers)
-    assert landed(r)["res"] == result
-    assert "set-cookie" not in r.headers
-    if result != "problems":
+        r = await remove(c)
+    assert r.status_code == status
+    assert r.headers["content-type"] == "application/problem+json"
+    assert "location" not in r.headers
+    if status != 422 or not problems:
         assert proposed == []
+
+
+async def test_a_cross_site_remove_is_refused_before_anything_happens(monkeypatch: pytest.MonkeyPatch):
+    proposed = removal(monkeypatch)
+    async with client() as c:
+        r = await remove(c, headers=MARIO | {"Sec-Fetch-Site": "cross-site"})
+        assert r.status_code == 403
+        r = await remove(c, headers=MARIO | {"Origin": "https://evil.example"})
+        assert r.status_code == 403
+    assert proposed == []
 
 
 @pytest.mark.parametrize("path", ["apps/thoth.yaml", "databases/thoth.yaml", "apps/janus.yaml", "apps/xolotl.yaml"])
@@ -274,33 +169,25 @@ async def test_meru_own_parts_cannot_be_removed(monkeypatch: pytest.MonkeyPatch,
     proposed = removal(monkeypatch)
     async with client() as c:
         r = await remove(c, path=path)
-    assert landed(r)["res"] == "platform"
-    assert "set-cookie" not in r.headers
+    assert r.status_code == 422
     assert proposed == []
 
 
 async def test_the_platform_list_is_a_setting(monkeypatch: pytest.MonkeyPatch):
     proposed = removal(monkeypatch)
     async with client(platform=frozenset({"kitsune"})) as c:
-        assert landed(await remove(c))["res"] == "platform"
+        assert (await remove(c)).status_code == 422
     assert proposed == []
 
 
-async def test_without_the_bot_a_remove_is_refused_first_then_a_503():
+async def test_without_the_bot_a_remove_is_a_503_after_the_cheap_refusals():
     async with client(token=None) as c:
-        assert landed(await remove(c, headers=MARIO | {"Sec-Fetch-Site": "cross-site"}))["res"] == "not-atlas"
-        assert landed(await remove(c, path="../secrets.yaml"))["res"] == "bad-button"
+        assert (await remove(c, path="../secrets.yaml")).status_code == 422
         assert (await remove(c)).status_code == 503
-
-
-async def test_a_pr_that_isnt_a_number_is_a_422_before_any_click_check():
-    async with client() as c:
-        r = await c.post("/api/janus/approve/abc/start", data=FORM, headers=MARIO | {"Sec-Fetch-Site": "cross-site"})
-    assert r.status_code == 422
 
 
 async def test_remove_only_takes_a_request_path(monkeypatch: pytest.MonkeyPatch):
     proposed = removal(monkeypatch)
     async with client() as c:
-        assert landed(await remove(c, path="../secrets.yaml"))["res"] == "bad-button"
+        assert (await remove(c, path="../secrets.yaml")).status_code == 422
     assert proposed == []
